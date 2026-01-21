@@ -12,6 +12,7 @@ type Config struct {
 	Concurrency  int
 	PollInterval time.Duration
 	DefaultQueue string
+	Clock        Clock
 }
 
 /*
@@ -30,6 +31,7 @@ func defaultConfig() Config {
 		Concurrency:  4,
 		PollInterval: 200 * time.Millisecond,
 		DefaultQueue: DefaultQueue,
+		Clock:        RealClock{},
 	}
 	return c
 }
@@ -59,6 +61,10 @@ func applyOptions(opts ...Option) Config {
 
 	if cfg.DefaultQueue == "" {
 		cfg.DefaultQueue = DefaultQueue
+	}
+
+	if cfg.Clock == nil {
+		cfg.Clock = RealClock{}
 	}
 
 	return cfg
@@ -97,5 +103,14 @@ This option sets the default queue.
 func WithDefaultQueue(q string) Option {
 	return func(cfg *Config) {
 		cfg.DefaultQueue = q
+	}
+}
+
+/*
+This option sets the clock.
+*/
+func WithClock(c Clock) Option {
+	return func(cfg *Config) {
+		cfg.Clock = c
 	}
 }

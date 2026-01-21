@@ -95,7 +95,7 @@ func (w *Worker) Run(ctx context.Context) error {
 			break
 		}
 
-		now := time.Now().UTC()
+		now := w.cfg.Clock.Now()
 
 		rec, ok, err := w.driver.Reserve(ctx, w.queue, now)
 		if err != nil {
