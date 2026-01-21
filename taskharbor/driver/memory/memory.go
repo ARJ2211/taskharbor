@@ -85,14 +85,13 @@ This function is required to promote due scheduled
 jobs into runnable. Called must hold the mutex lock.
 */
 func (qs *queueState) promoteDueLocked(now time.Time) {
-	for i := 0; i < qs.scheduled.Len(); i++ {
-		next := qs.scheduled[i]
+	for qs.scheduled.Len() > 0 {
+		next := qs.scheduled[0]
 		if next.RunAt.After(now) {
 			return
 		}
 		rec := heap.Pop(&qs.scheduled).(driver.JobRecord)
 		qs.runnable = append(qs.runnable, rec)
-
 	}
 }
 
@@ -239,6 +238,67 @@ func (d *Driver) Fail(ctx context.Context, id string, reason string) error {
 	}
 
 	return nil
+}
+
+/*
+Close marks the driver closed. Further operations return ErrDriverClosed.
+*/
+func (d *Driver) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.closed = true
+	return nil
+}
+
+/*
+DLQItems returns a copy of DLQ items for a queue.
+This is mainly useful for tests and debugging.
+*/
+func (d *Driver) DLQItems(queue string) []DLQItem {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	qs := d.queues[queue]
+	if qs == nil {
+		return nil
+	}
+
+	out := make([]DLQItem, 0, len(qs.dlq))
+	for _, item := range qs.dlq {
+		out = append(out, item)
+	}
+	return out
+}
+
+/*
+InflightSize returns number of inflight jobs for a queue.
+This is mainly useful for tests and debugging.
+*/
+func (d *Driver) InflightSize(queue string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	qs := d.queues[queue]
+	if qs == nil {
+		return 0
+	}
+	return len(qs.inflight)
+}
+
+/*
+RunnableSize returns number of runnable jobs for a queue.
+This is mainly useful for tests and debugging.
+*/
+func (d *Driver) RunnableSize(queue string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	qs := d.queues[queue]
+	if qs == nil {
+		return 0
+	}
+	return len(qs.runnable)
 }
 
 /*
