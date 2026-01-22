@@ -25,7 +25,22 @@ type JobRecord struct {
 	Timeout        time.Duration // Max allowed time for Job
 	IdempotencyKey string        // Allow idempotency during multiple calls (MILESTONE 6)
 	CreatedAt      time.Time     // Time when Job was created
-	Attempts       int           // Max retry amounts
+	Attempts       int           // Number of recorded failiures so far
+	MaxAttempts    int           // Max total attempts allowed
+	LastError      string        // Previous failiure reason
+	FailedAt       time.Time     // Previous failiure time
+
+}
+
+/*
+This is a dumb state update requested by the worker.
+DRIVER MUST NOT IMPLEMENT ANY RETRY POLICIES (backoff, jitter, etc...)
+*/
+type RetryUpdate struct {
+	RunAt     time.Time
+	Attempts  int
+	LastError string
+	FailedAt  time.Time
 }
 
 /*
@@ -44,6 +59,15 @@ func (r JobRecord) Validate() error {
 	}
 	if r.Timeout < 0 {
 		return ErrNegativeTimeout
+	}
+	if r.Attempts < 0 {
+		return ErrNegativeAttempts
+	}
+	if r.MaxAttempts < 0 {
+		return ErrNegativeMaxAttempts
+	}
+	if r.MaxAttempts > 0 && r.Attempts > r.MaxAttempts {
+		return ErrAttemptsExceedMaxAttempts
 	}
 	return nil
 }
@@ -65,16 +89,21 @@ type Driver interface {
 	Enqueue(ctx context.Context, rec JobRecord) error
 	Reserve(ctx context.Context, queue string, now time.Time) (JobRecord, bool, error)
 	Ack(ctx context.Context, id string) error
+	Retry(ctx context.Context, id string, upd RetryUpdate) error
 	Fail(ctx context.Context, id string, reason string) error
 	Close() error
 }
 
 // Errors
 var (
-	ErrJobIDRequired   = errors.New("job id is required")
-	ErrJobTypeRequired = errors.New("job type is required")
-	ErrQueueRequired   = errors.New("queue is required")
-	ErrNegativeTimeout = errors.New("timeout cannot be negative")
-	ErrJobNotFound     = errors.New("job not found")
-	ErrJobNotInflight  = errors.New("job is not inflight")
+	ErrJobIDRequired             = errors.New("job id is required")
+	ErrJobTypeRequired           = errors.New("job type is required")
+	ErrQueueRequired             = errors.New("queue is required")
+	ErrNegativeTimeout           = errors.New("timeout cannot be negative")
+	ErrNegativeAttempts          = errors.New("attempts cannot be negative")
+	ErrNegativeMaxAttempts       = errors.New("max attempts cannot be negative")
+	ErrAttemptsExceedMaxAttempts = errors.New("attempts cannot exceed max attempts")
+
+	ErrJobNotFound    = errors.New("job not found")
+	ErrJobNotInflight = errors.New("job is not inflight")
 )

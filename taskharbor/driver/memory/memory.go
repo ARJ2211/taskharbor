@@ -199,6 +199,61 @@ func (d *Driver) Ack(ctx context.Context, id string) error {
 }
 
 /*
+This moves a reserved job back into the runnable/scheduled queue and updates
+the failiure metadata. THIS IS JUST TO TRACK AND RECHEDULE THE RETRY. THE DRIVER
+SHOULD NOT IMPLEMENT ANY RETRY POLICIES.
+*/
+func (d *Driver) Retry(ctx context.Context, id string, upd driver.RetryUpdate) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.closed {
+		return ErrDriverClosed
+	}
+
+	if d.closed {
+		return ErrDriverClosed
+	}
+
+	q, ok := d.inflightIndex[id]
+	if !ok {
+		return driver.ErrJobNotInflight
+	}
+
+	qs, ok := d.queues[q]
+	if !ok {
+		return driver.ErrJobNotInflight
+	}
+
+	rec, ok := qs.inflight[id]
+	if !ok {
+		return driver.ErrJobNotInflight
+	}
+
+	delete(qs.inflight, id)
+	delete(d.inflightIndex, id)
+
+	rec.RunAt = upd.RunAt
+	rec.Attempts = upd.Attempts
+	rec.LastError = upd.LastError
+	rec.FailedAt = upd.FailedAt
+
+	// ReQueue it based on the runAt. If RunAt is in the PAST
+	// promote due locked will move it immidiately during reserve
+	// to the queue
+	if rec.RunAt.IsZero() {
+		qs.runnable = append(qs.runnable, rec)
+		return nil
+	}
+	heap.Push(&qs.scheduled, rec)
+	return nil
+}
+
+/*
 This marks a reserved job as failed and moves it to DLQ storage.
 */
 func (d *Driver) Fail(ctx context.Context, id string, reason string) error {
