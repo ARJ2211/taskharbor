@@ -179,3 +179,67 @@ func TestMemory_ReserveDoesNotDoubleDeliverInflight(t *testing.T) {
 		t.Fatalf("expected ok=false when only job is inflight, got ok=true")
 	}
 }
+
+func TestMemory_RetryMovesInflightBackToScheduled(t *testing.T) {
+	ctx := context.Background()
+	d := New()
+
+	t0 := time.Date(2026, 1, 20, 10, 0, 0, 0, time.UTC)
+	retryAt := t0.Add(10 * time.Second)
+
+	rec := driver.JobRecord{
+		ID:        "job-retry-1",
+		Type:      "task.retry",
+		Payload:   []byte(`{"x":1}`),
+		Queue:     "default",
+		RunAt:     time.Time{},
+		CreatedAt: t0,
+	}
+
+	if err := d.Enqueue(ctx, rec); err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+
+	_, ok, err := d.Reserve(ctx, "default", t0)
+	if err != nil {
+		t.Fatalf("reserve failed: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected ok=true, got ok=false")
+	}
+
+	if err := d.Retry(ctx, rec.ID, driver.RetryUpdate{
+		RunAt:     retryAt,
+		Attempts:  1,
+		LastError: "boom",
+		FailedAt:  t0,
+	}); err != nil {
+		t.Fatalf("retry failed: %v", err)
+	}
+
+	if d.InflightSize("default") != 0 {
+		t.Fatalf("expected inflight size 0, got %d", d.InflightSize("default"))
+	}
+
+	_, ok, err = d.Reserve(ctx, "default", t0)
+	if err != nil {
+		t.Fatalf("reserve failed: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected ok=false before retryAt, got ok=true")
+	}
+
+	got, ok, err := d.Reserve(ctx, "default", retryAt)
+	if err != nil {
+		t.Fatalf("reserve failed: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected ok=true at retryAt, got ok=false")
+	}
+	if got.Attempts != 1 {
+		t.Fatalf("expected attempts=1, got %d", got.Attempts)
+	}
+	if got.LastError != "boom" {
+		t.Fatalf("expected last_error=boom, got %s", got.LastError)
+	}
+}

@@ -71,6 +71,7 @@ func (c *Client) Enqueue(ctx context.Context, req JobRequest) (JobId, error) {
 		RunAt:          req.RunAt,
 		Timeout:        req.Timeout,
 		IdempotencyKey: req.IdempotencyKey,
+		MaxAttempts:    req.MaxAttempts,
 		CreatedAt:      now,
 		Attempts:       0,
 	}
