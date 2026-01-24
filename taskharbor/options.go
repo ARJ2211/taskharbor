@@ -8,13 +8,15 @@ be used by the Client and Worker. We will use this to
 keep defaults in one place to avoid hardcoding anywhere.
 */
 type Config struct {
-	Codec        Codec
-	Concurrency  int
-	PollInterval time.Duration
-	DefaultQueue string
-	Clock        Clock
-	RetryPolicy  RetryPolicy
-	Middlewares  []Middleware
+	Codec             Codec
+	Concurrency       int
+	PollInterval      time.Duration
+	DefaultQueue      string
+	Clock             Clock
+	RetryPolicy       RetryPolicy
+	Middlewares       []Middleware
+	LeaseDuration     time.Duration
+	HeartbeatInterval time.Duration
 }
 
 /*
@@ -29,11 +31,13 @@ configuration for the client and worker.
 */
 func defaultConfig() Config {
 	var c Config = Config{
-		Codec:        JsonCodec{},
-		Concurrency:  4,
-		PollInterval: 200 * time.Millisecond,
-		DefaultQueue: DefaultQueue,
-		Clock:        RealClock{},
+		Codec:             JsonCodec{},
+		Concurrency:       4,
+		PollInterval:      200 * time.Millisecond,
+		DefaultQueue:      DefaultQueue,
+		Clock:             RealClock{},
+		LeaseDuration:     30 * time.Second,
+		HeartbeatInterval: 0, // Computed in applyoptions.
 	}
 	return c
 }
@@ -67,6 +71,24 @@ func applyOptions(opts ...Option) Config {
 
 	if cfg.Clock == nil {
 		cfg.Clock = RealClock{}
+	}
+	if cfg.LeaseDuration <= 0 {
+		cfg.LeaseDuration = 30 * time.Second
+	}
+
+	if cfg.HeartbeatInterval <= 0 {
+		cfg.HeartbeatInterval = cfg.LeaseDuration / 3
+	}
+
+	if cfg.HeartbeatInterval <= 0 {
+		cfg.HeartbeatInterval = time.Second
+	}
+
+	if cfg.HeartbeatInterval >= cfg.LeaseDuration {
+		cfg.HeartbeatInterval = cfg.LeaseDuration / 3
+		if cfg.HeartbeatInterval <= 0 {
+			cfg.HeartbeatInterval = time.Second
+		}
 	}
 
 	return cfg
@@ -132,5 +154,23 @@ This option sets the user middlewares.
 func WithMiddleware(mw Middleware) Option {
 	return func(cfg *Config) {
 		cfg.Middlewares = append(cfg.Middlewares, mw)
+	}
+}
+
+/*
+This option sets the lease duration.
+*/
+func WithLeaseDuration(d time.Duration) Option {
+	return func(cfg *Config) {
+		cfg.LeaseDuration = d
+	}
+}
+
+/*
+This option sets the heartbeat interval.
+*/
+func WithHeartbeatInterval(d time.Duration) Option {
+	return func(cfg *Config) {
+		cfg.HeartbeatInterval = d
 	}
 }

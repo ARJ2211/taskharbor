@@ -67,6 +67,18 @@ func TestWorker_RetriesThenSucceeds(t *testing.T) {
 		t.Fatalf("timed out waiting for first attempt")
 	}
 
+	// wait until worker has scheduled the retry (job leaves inflight)
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if d.InflightSize("default") == 0 {
+			break
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+	if d.InflightSize("default") != 0 {
+		t.Fatalf("timed out waiting for job to leave inflight (retry not scheduled yet)")
+	}
+
 	// retry becomes runnable
 	fc.Advance(5 * time.Second)
 
@@ -153,6 +165,18 @@ func TestWorker_FailsToDLQAfterMaxAttempts(t *testing.T) {
 		t.Fatalf("timed out waiting for attempt 1")
 	}
 
+	// wait until worker has scheduled the retry (job leaves inflight)
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if d.InflightSize("default") == 0 {
+			break
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+	if d.InflightSize("default") != 0 {
+		t.Fatalf("timed out waiting for job to leave inflight (retry not scheduled yet)")
+	}
+
 	// retry for attempt #2 (NextDelay(1) = 5s)
 	fc.Advance(5 * time.Second)
 	select {
@@ -162,6 +186,18 @@ func TestWorker_FailsToDLQAfterMaxAttempts(t *testing.T) {
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatalf("timed out waiting for attempt 2")
+	}
+
+	// wait until worker has scheduled the retry (job leaves inflight)
+	deadline = time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if d.InflightSize("default") == 0 {
+			break
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+	if d.InflightSize("default") != 0 {
+		t.Fatalf("timed out waiting for job to leave inflight (retry not scheduled yet)")
 	}
 
 	// retry for attempt #3 (NextDelay(2) = 10s)
