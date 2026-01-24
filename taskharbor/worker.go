@@ -117,7 +117,7 @@ func (w *Worker) Run(ctx context.Context) error {
 
 		now := w.cfg.Clock.Now()
 
-		rec, lease, ok, err := w.driver.Reserve(ctx, w.queue, now, w.cfg.LeaseDuration)
+		rec, ok, err := w.driver.Reserve(ctx, w.queue, now)
 		if err != nil {
 			// If context was cancelled gracefully shut down
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -140,7 +140,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		sem <- struct{}{}
 		wg.Add(1)
 
-		go func(r driver.JobRecord, lease driver.Lease) {
+		go func(r driver.JobRecord) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
@@ -151,9 +151,7 @@ func (w *Worker) Run(ctx context.Context) error {
 				_ = w.driver.Fail(
 					drvCtx,
 					r.ID,
-					lease.Token,
-					w.cfg.Clock.Now(),
-					"no handler registered for job type: "+r.Type,
+					"no handler registered for job type",
 				)
 				return
 			}
@@ -180,7 +178,7 @@ func (w *Worker) Run(ctx context.Context) error {
 			}()
 
 			if err == nil {
-				_ = w.driver.Ack(drvCtx, r.ID, lease.Token, w.cfg.Clock.Now())
+				_ = w.driver.Ack(drvCtx, r.ID)
 				return
 			}
 
@@ -190,7 +188,7 @@ func (w *Worker) Run(ctx context.Context) error {
 
 			// Unrecoverable means DLQ immediately.
 			if IsUnrecoverable(err) {
-				_ = w.driver.Fail(drvCtx, r.ID, lease.Token, w.cfg.Clock.Now(), reason)
+				_ = w.driver.Fail(drvCtx, r.ID, reason)
 				return
 			}
 
@@ -198,28 +196,27 @@ func (w *Worker) Run(ctx context.Context) error {
 
 			// If no policy configured, straight to DLQ
 			if w.cfg.RetryPolicy == nil || maxAttempts <= 0 {
-				_ = w.driver.Fail(drvCtx, r.ID, lease.Token, w.cfg.Clock.Now(), reason)
+				_ = w.driver.Fail(drvCtx, r.ID, reason)
 				return
 			}
 
 			// Check if we have any available attempts
 			nextAttempts := r.Attempts + 1
 			if nextAttempts >= maxAttempts {
-				_ = w.driver.Fail(drvCtx, r.ID, lease.Token, w.cfg.Clock.Now(), reason)
+				_ = w.driver.Fail(drvCtx, r.ID, reason)
 				return
 			}
 
 			delay := w.cfg.RetryPolicy.NextDelay(nextAttempts)
 			nextRunAt := now.Add(delay)
 
-			upd := driver.RetryUpdate{
+			_ = w.driver.Retry(drvCtx, r.ID, driver.RetryUpdate{
 				RunAt:     nextRunAt,
 				Attempts:  nextAttempts,
 				LastError: reason,
 				FailedAt:  now,
-			}
-			_ = w.driver.Retry(drvCtx, r.ID, lease.Token, w.cfg.Clock.Now(), upd)
-		}(rec, lease)
+			})
+		}(rec)
 	}
 
 shutdown:
