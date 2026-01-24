@@ -57,7 +57,8 @@ func main() {
 			Subject: "Hello",
 			Body:    "Immediate job",
 		},
-		Queue: "default",
+		Queue:       "default",
+		MaxAttempts: 5,
 	})
 	if err != nil {
 		panic(err)
@@ -88,6 +89,21 @@ func main() {
 		},
 		Queue: "default",
 		RunAt: time.Now().UTC().Add(2 * time.Second),
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("ENQUEUE: scheduled job (8s later)")
+	_, err = client.Enqueue(ctx, taskharbor.JobRequest{
+		Type: "email.send",
+		Payload: EmailPayload{
+			To:      "aayush@example.com",
+			Subject: "Scheduled",
+			Body:    "Scheduled job (8s)",
+		},
+		Queue: "default",
+		RunAt: time.Now().UTC().Add(8 * time.Second),
 	})
 	if err != nil {
 		panic(err)
