@@ -190,7 +190,6 @@ func TestWorker_FailsToDLQAfterMaxAttempts(t *testing.T) {
 	}
 
 	items := d.DLQItems("default")
-	t.Logf("items: %v", items)
 	if len(items) != 1 {
 		t.Fatalf("expected DLQ size 1, got %d", len(items))
 	}
