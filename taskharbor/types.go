@@ -23,7 +23,7 @@ type JobRequest struct {
 	RunAt          time.Time     // Defines the scheduled time to run the Job at (Default 0)
 	Timeout        time.Duration // Defines the timeout (TODO: MILESTONE 3)
 	IdempotencyKey string        // Facilitate idempotency (TODO: MILESTONE 6)
-	MaxAttempts    int           // Total number of retries allowed
+	MaxAttempts    int           // Total number of retries allowed (0 default)
 }
 
 /*

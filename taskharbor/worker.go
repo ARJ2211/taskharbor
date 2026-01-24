@@ -67,7 +67,9 @@ the different middlewares.
 */
 func (w *Worker) wrapHandler(h Handler) Handler {
 	// Add the default middlewares
-	middlewares := []Middleware{RecoverMiddleware()}
+	// 1. RecoverMiddleware to handle panics.
+	// 2. TimeoutMiddleware to handle timeouts.
+	middlewares := []Middleware{RecoverMiddleware(), TimeoutMiddleware()}
 
 	// Add any user middlewares
 	middlewares = append(middlewares, w.cfg.Middlewares...)
