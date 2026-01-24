@@ -117,7 +117,7 @@ func (w *Worker) Run(ctx context.Context) error {
 
 		now := w.cfg.Clock.Now()
 
-		rec, lease, ok, err := w.driver.Reserve(ctx, w.queue, now, w.cfg.LeaseDuration)
+		rec, ok, err := w.driver.Reserve(ctx, w.queue, now)
 		if err != nil {
 			// If context was cancelled gracefully shut down
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -140,72 +140,18 @@ func (w *Worker) Run(ctx context.Context) error {
 		sem <- struct{}{}
 		wg.Add(1)
 
-		go func(r driver.JobRecord, lease driver.Lease) {
+		go func(r driver.JobRecord) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
 			drvCtx := context.WithoutCancel(ctx)
-			jobCtx, cancelJob := context.WithCancel(ctx)
-			defer cancelJob()
-
-			var leaseMu sync.Mutex
-			curLease := lease
-
-			hbStop := make(chan struct{})
-			hbDone := make(chan struct{})
-
-			go func() {
-				defer close(hbDone)
-
-				// Safe-guard although this will never happen.
-				if w.cfg.HeartbeatInterval <= 0 {
-					return
-				}
-
-				t := time.NewTicker(w.cfg.HeartbeatInterval)
-				defer t.Stop()
-
-				for {
-					select {
-					case <-hbStop:
-						return
-					case <-t.C:
-						leaseMu.Lock()
-						tok := curLease.Token
-						leaseMu.Unlock()
-
-						now := w.cfg.Clock.Now()
-						newLease, err := w.driver.ExtendLease(
-							drvCtx,
-							r.ID,
-							tok,
-							now,
-							w.cfg.LeaseDuration,
-						)
-						if err != nil {
-							// On any heartbeat failiure we stop work.
-							// Lease specific errors will be handled more strongly
-							// once the driver enforces leases.
-							cancelJob()
-							return
-						}
-
-						leaseMu.Lock()
-						curLease = newLease
-						leaseMu.Unlock()
-					}
-
-				}
-			}()
 
 			h := w.getHandler(r.Type)
 			if h == nil {
 				_ = w.driver.Fail(
 					drvCtx,
 					r.ID,
-					lease.Token,
-					w.cfg.Clock.Now(),
-					"no handler registered for job type: "+r.Type,
+					"no handler registered for job type",
 				)
 				return
 			}
@@ -228,20 +174,11 @@ func (w *Worker) Run(ctx context.Context) error {
 						err = PanicError{Value: v, Stack: debug.Stack()}
 					}
 				}()
-				return h(jobCtx, job)
+				return h(ctx, job)
 			}()
 
-			// Stop and join the heartbeat goroutine so there is no
-			// race condition with ACK/FAIL/RETRY path.
-			close(hbStop)
-			<-hbDone
-
-			leaseMu.Lock()
-			finalLease := curLease
-			leaseMu.Unlock()
-
 			if err == nil {
-				_ = w.driver.Ack(drvCtx, r.ID, finalLease.Token, w.cfg.Clock.Now())
+				_ = w.driver.Ack(drvCtx, r.ID)
 				return
 			}
 
@@ -251,7 +188,7 @@ func (w *Worker) Run(ctx context.Context) error {
 
 			// Unrecoverable means DLQ immediately.
 			if IsUnrecoverable(err) {
-				_ = w.driver.Fail(drvCtx, r.ID, finalLease.Token, w.cfg.Clock.Now(), reason)
+				_ = w.driver.Fail(drvCtx, r.ID, reason)
 				return
 			}
 
@@ -259,28 +196,27 @@ func (w *Worker) Run(ctx context.Context) error {
 
 			// If no policy configured, straight to DLQ
 			if w.cfg.RetryPolicy == nil || maxAttempts <= 0 {
-				_ = w.driver.Fail(drvCtx, r.ID, finalLease.Token, w.cfg.Clock.Now(), reason)
+				_ = w.driver.Fail(drvCtx, r.ID, reason)
 				return
 			}
 
 			// Check if we have any available attempts
 			nextAttempts := r.Attempts + 1
 			if nextAttempts >= maxAttempts {
-				_ = w.driver.Fail(drvCtx, r.ID, finalLease.Token, w.cfg.Clock.Now(), reason)
+				_ = w.driver.Fail(drvCtx, r.ID, reason)
 				return
 			}
 
 			delay := w.cfg.RetryPolicy.NextDelay(nextAttempts)
 			nextRunAt := now.Add(delay)
 
-			upd := driver.RetryUpdate{
+			_ = w.driver.Retry(drvCtx, r.ID, driver.RetryUpdate{
 				RunAt:     nextRunAt,
 				Attempts:  nextAttempts,
 				LastError: reason,
 				FailedAt:  now,
-			}
-			_ = w.driver.Retry(drvCtx, r.ID, finalLease.Token, w.cfg.Clock.Now(), upd)
-		}(rec, lease)
+			})
+		}(rec)
 	}
 
 shutdown:

@@ -133,32 +133,25 @@ job if available. This is a non-blocking operation
 ok=false means there is no runnable job currently.
 */
 func (d *Driver) Reserve(
-	ctx context.Context,
-	queue string,
-	now time.Time,
-	leaseFor time.Duration) (
-	driver.JobRecord, driver.Lease, bool, error,
+	ctx context.Context, queue string, now time.Time) (
+	driver.JobRecord, bool, error,
 ) {
 	if err := ctx.Err(); err != nil {
-		return driver.JobRecord{}, driver.Lease{}, false, err
-	}
-
-	if leaseFor <= 0 {
-		return driver.JobRecord{}, driver.Lease{}, false, driver.ErrInvalidLeaseDuration
+		return driver.JobRecord{}, false, err
 	}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if d.closed {
-		return driver.JobRecord{}, driver.Lease{}, false, ErrDriverClosed
+		return driver.JobRecord{}, false, ErrDriverClosed
 	}
 
 	qs := d.getQueueLocked(queue)
 	qs.promoteDueLocked(now)
 
 	if len(qs.runnable) == 0 {
-		return driver.JobRecord{}, driver.Lease{}, false, nil
+		return driver.JobRecord{}, false, nil
 	}
 
 	rec := qs.runnable[0]
@@ -167,70 +160,13 @@ func (d *Driver) Reserve(
 	qs.inflight[rec.ID] = rec
 	d.inflightIndex[rec.ID] = queue
 
-	lease := driver.Lease{
-		Token:     driver.LeaseToken(""),
-		ExpiresAt: now.Add(leaseFor),
-	}
-
-	return rec, lease, true, nil
-}
-
-/*
-This function renews an extended lease for an inflight
-job and returns the new lease.
-*/
-func (d *Driver) ExtendLease(
-	ctx context.Context,
-	id string,
-	token driver.LeaseToken,
-	now time.Time,
-	leaseFor time.Duration) (driver.Lease, error,
-) {
-	if err := ctx.Err(); err != nil {
-		return driver.Lease{}, err
-	}
-
-	if leaseFor <= 0 {
-		return driver.Lease{}, driver.ErrInvalidLeaseDuration
-	}
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if d.closed {
-		return driver.Lease{}, ErrDriverClosed
-	}
-
-	q, ok := d.inflightIndex[id]
-	if !ok {
-		return driver.Lease{}, driver.ErrJobNotInflight
-	}
-
-	qs := d.queues[q]
-	if qs == nil {
-		return driver.Lease{}, driver.ErrJobNotInflight
-	}
-
-	if _, ok := qs.inflight[id]; !ok {
-		return driver.Lease{}, driver.ErrJobNotInflight
-	}
-
-	// TODO: Token enforement can come later.
-	return driver.Lease{
-		Token:     token,
-		ExpiresAt: now.Add(leaseFor),
-	}, nil
+	return rec, true, nil
 }
 
 /*
 This marks a job as completed.
 */
-func (d *Driver) Ack(
-	ctx context.Context,
-	id string,
-	token driver.LeaseToken,
-	now time.Time,
-) error {
+func (d *Driver) Ack(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -267,13 +203,7 @@ This moves a reserved job back into the runnable/scheduled queue and updates
 the failiure metadata. THIS IS JUST TO TRACK AND RECHEDULE THE RETRY. THE DRIVER
 SHOULD NOT IMPLEMENT ANY RETRY POLICIES.
 */
-func (d *Driver) Retry(
-	ctx context.Context,
-	id string,
-	token driver.LeaseToken,
-	now time.Time,
-	upd driver.RetryUpdate,
-) error {
+func (d *Driver) Retry(ctx context.Context, id string, upd driver.RetryUpdate) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -326,13 +256,7 @@ func (d *Driver) Retry(
 /*
 This marks a reserved job as failed and moves it to DLQ storage.
 */
-func (d *Driver) Fail(
-	ctx context.Context,
-	id string,
-	token driver.LeaseToken,
-	now time.Time,
-	reason string,
-) error {
+func (d *Driver) Fail(ctx context.Context, id string, reason string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -365,7 +289,7 @@ func (d *Driver) Fail(
 	qs.dlq[id] = DLQItem{
 		Record:   rec,
 		Reason:   reason,
-		FailedAt: now.UTC(),
+		FailedAt: time.Now().UTC(),
 	}
 
 	return nil
