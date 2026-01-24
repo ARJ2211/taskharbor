@@ -29,7 +29,7 @@ func TestClient_EnqueueStoresJob(t *testing.T) {
 	}
 
 	now := time.Now().UTC()
-	rec, ok, err := d.Reserve(ctx, "default", now)
+	rec, _, ok, err := d.Reserve(ctx, "default", now, 30*time.Second)
 	if err != nil {
 		t.Fatalf("reserve failed: %v", err)
 	}

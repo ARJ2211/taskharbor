@@ -44,6 +44,16 @@ type RetryUpdate struct {
 }
 
 /*
+Lease token will allow the resources to be shared by the
+handlers in a timely and orderly fashion.
+*/
+type LeaseToken string
+type Lease struct {
+	Token     LeaseToken
+	ExpiresAt time.Time
+}
+
+/*
 This function validates the JobRecord before a driver stores it.
 Drivers can call this to keep behavior consistent.
 */
@@ -77,20 +87,39 @@ Driver is the backend contract.
 
 Milestone 2 contract:
 - Enqueue stores a job (runnable or scheduled via RunAt)
-- Reserve returns one runnable job (RunAt <= now)
+- Reserve returns one runnable job (RunAt <= now) + a lease
+- Extend lease renews an existing lease for an inflight job
 - Ack marks the reserved job completed
 - Fail marks the reserved job failed and stores it into DLQ (driver-owned)
 - Reserve is non-blocking in v0 (ok=false means nothing runnable)
-
-No leases in milestone 2.
-No retries in milestone 2.
 */
 type Driver interface {
 	Enqueue(ctx context.Context, rec JobRecord) error
-	Reserve(ctx context.Context, queue string, now time.Time) (JobRecord, bool, error)
-	Ack(ctx context.Context, id string) error
-	Retry(ctx context.Context, id string, upd RetryUpdate) error
-	Fail(ctx context.Context, id string, reason string) error
+	Reserve(
+		ctx context.Context,
+		queue string,
+		now time.Time,
+		leaseFor time.Duration) (JobRecord, Lease, bool, error)
+	ExtendLease(
+		ctx context.Context,
+		id string,
+		token LeaseToken,
+		now time.Time,
+		leaseFor time.Duration) (Lease, error)
+	Ack(ctx context.Context,
+		id string,
+		token LeaseToken,
+		now time.Time) error
+	Retry(ctx context.Context,
+		id string,
+		token LeaseToken,
+		now time.Time,
+		upd RetryUpdate) error
+	Fail(ctx context.Context,
+		id string,
+		token LeaseToken,
+		now time.Time,
+		reason string) error
 	Close() error
 }
 
@@ -106,4 +135,8 @@ var (
 
 	ErrJobNotFound    = errors.New("job not found")
 	ErrJobNotInflight = errors.New("job is not inflight")
+
+	ErrInvalidLeaseDuration = errors.New("invalid lease duration")
+	ErrLeaseExpired         = errors.New("lease expired")
+	ErrLeaseMismatch        = errors.New("lease mismatch")
 )
