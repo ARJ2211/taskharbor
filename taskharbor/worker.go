@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -61,7 +62,24 @@ func NewWorker(d driver.Driver, opts ...Option) *Worker {
 }
 
 /*
-This function will register a handler for a perticular
+This function is used to wrap our handlers around
+the different middlewares.
+*/
+func (w *Worker) wrapHandler(h Handler) Handler {
+	// Add the default middlewares
+	middlewares := []Middleware{RecoverMiddleware()}
+
+	// Add any user middlewares
+	middlewares = append(middlewares, w.cfg.Middlewares...)
+
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		h = middlewares[i](h)
+	}
+	return h
+}
+
+/*
+This function will register a handler for a particular
 worker as a key-value pair so the worker knows what
 handler to call when a job is sent to it on its queue.
 */
@@ -77,7 +95,7 @@ func (w *Worker) Register(jobType string, h Handler) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	w.handlers[jobType] = h
+	w.handlers[jobType] = w.wrapHandler(h)
 	return nil
 }
 
@@ -100,9 +118,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		rec, ok, err := w.driver.Reserve(ctx, w.queue, now)
 		if err != nil {
 			// If context was cancelled gracefully shut down
-			if errors.Is(
-				err, context.Canceled) || errors.Is(
-				err, context.DeadlineExceeded) {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				break
 			}
 			return err
@@ -112,11 +128,12 @@ func (w *Worker) Run(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				// stop loop, go wait on inflight
-				break
+				goto shutdown
 			case <-time.After(w.cfg.PollInterval):
 			}
 			continue
 		}
+
 		// Concurrency limit
 		sem <- struct{}{}
 		wg.Add(1)
@@ -129,7 +146,11 @@ func (w *Worker) Run(ctx context.Context) error {
 
 			h := w.getHandler(r.Type)
 			if h == nil {
-				_ = w.driver.Fail(ctx, r.ID, "no handler registered for job type")
+				_ = w.driver.Fail(
+					drvCtx,
+					r.ID,
+					"no handler registered for job type",
+				)
 				return
 			}
 
@@ -143,9 +164,19 @@ func (w *Worker) Run(ctx context.Context) error {
 				CreatedAt: r.CreatedAt,
 			}
 
-			err := h(ctx, job)
+			// Belt-and-suspenders panic safety: middleware should catch panics,
+			// but this ensures a panic never kills the worker goroutine.
+			err := func() (err error) {
+				defer func() {
+					if v := recover(); v != nil {
+						err = PanicError{Value: v, Stack: debug.Stack()}
+					}
+				}()
+				return h(ctx, job)
+			}()
+
 			if err == nil {
-				_ = w.driver.Ack(ctx, r.ID)
+				_ = w.driver.Ack(drvCtx, r.ID)
 				return
 			}
 
@@ -159,7 +190,7 @@ func (w *Worker) Run(ctx context.Context) error {
 				return
 			}
 
-			maxAttempts := w.maxAtteptsFor(r)
+			maxAttempts := w.maxAttemptsFor(r)
 
 			// If no policy configured, straight to DLQ
 			if w.cfg.RetryPolicy == nil || maxAttempts <= 0 {
@@ -177,7 +208,7 @@ func (w *Worker) Run(ctx context.Context) error {
 			delay := w.cfg.RetryPolicy.NextDelay(nextAttempts)
 			nextRunAt := now.Add(delay)
 
-			_ = w.driver.Retry(drvCtx, rec.ID, driver.RetryUpdate{
+			_ = w.driver.Retry(drvCtx, r.ID, driver.RetryUpdate{
 				RunAt:     nextRunAt,
 				Attempts:  nextAttempts,
 				LastError: reason,
@@ -186,6 +217,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		}(rec)
 	}
 
+shutdown:
 	wg.Wait()
 	return nil
 }
@@ -200,9 +232,9 @@ func (w *Worker) getHandler(jobType string) Handler {
 }
 
 /*
-This function returns the max attepts for a job.
+This function returns the max attempts for a job.
 */
-func (w *Worker) maxAtteptsFor(rec driver.JobRecord) int {
+func (w *Worker) maxAttemptsFor(rec driver.JobRecord) int {
 	if rec.MaxAttempts > 0 {
 		return rec.MaxAttempts
 	}
