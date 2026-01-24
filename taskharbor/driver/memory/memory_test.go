@@ -28,7 +28,7 @@ func TestMemory_EnqueueReserveAck(t *testing.T) {
 		t.Fatalf("enqueue failed: %v", err)
 	}
 
-	got, ok, err := d.Reserve(ctx, "default", now)
+	got, lease, ok, err := d.Reserve(ctx, "default", now, 30*time.Second)
 	if err != nil {
 		t.Fatalf("reserve failed: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestMemory_EnqueueReserveAck(t *testing.T) {
 		t.Fatalf("expected inflight size 1, got %d", d.InflightSize("default"))
 	}
 
-	err = d.Ack(ctx, rec.ID)
+	err = d.Ack(ctx, rec.ID, lease.Token, now)
 	if err != nil {
 		t.Fatalf("ack failed: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestMemory_SchedulePromotion(t *testing.T) {
 		t.Fatalf("enqueue failed: %v", err)
 	}
 
-	_, ok, err := d.Reserve(ctx, "default", t0)
+	_, _, ok, err := d.Reserve(ctx, "default", t0, 30*time.Second)
 	if err != nil {
 		t.Fatalf("reserve failed: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestMemory_SchedulePromotion(t *testing.T) {
 		t.Fatalf("expected ok=false before runAt, got ok=true")
 	}
 
-	_, ok, err = d.Reserve(ctx, "default", runAt)
+	_, _, ok, err = d.Reserve(ctx, "default", runAt, 30*time.Second)
 	if err != nil {
 		t.Fatalf("reserve failed: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestMemory_FailMovesToDLQ(t *testing.T) {
 		t.Fatalf("enqueue failed: %v", err)
 	}
 
-	_, ok, err := d.Reserve(ctx, "default", now)
+	_, lease, ok, err := d.Reserve(ctx, "default", now, 30*time.Second)
 	if err != nil {
 		t.Fatalf("reserve failed: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestMemory_FailMovesToDLQ(t *testing.T) {
 		t.Fatalf("expected ok=true, got ok=false")
 	}
 
-	err = d.Fail(ctx, rec.ID, "boom")
+	err = d.Fail(ctx, rec.ID, lease.Token, now, "boom")
 	if err != nil {
 		t.Fatalf("fail failed: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestMemory_ReserveDoesNotDoubleDeliverInflight(t *testing.T) {
 		t.Fatalf("enqueue failed: %v", err)
 	}
 
-	got1, ok, err := d.Reserve(ctx, "default", now)
+	got1, _, ok, err := d.Reserve(ctx, "default", now, 30*time.Second)
 	if err != nil {
 		t.Fatalf("reserve failed: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestMemory_ReserveDoesNotDoubleDeliverInflight(t *testing.T) {
 		t.Fatalf("expected id %s, got %s", rec.ID, got1.ID)
 	}
 
-	_, ok, err = d.Reserve(ctx, "default", now)
+	_, _, ok, err = d.Reserve(ctx, "default", now, 30*time.Second)
 	if err != nil {
 		t.Fatalf("reserve failed: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestMemory_RetryMovesInflightBackToScheduled(t *testing.T) {
 		t.Fatalf("enqueue failed: %v", err)
 	}
 
-	_, ok, err := d.Reserve(ctx, "default", t0)
+	_, lease, ok, err := d.Reserve(ctx, "default", t0, 30*time.Second)
 	if err != nil {
 		t.Fatalf("reserve failed: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestMemory_RetryMovesInflightBackToScheduled(t *testing.T) {
 		t.Fatalf("expected ok=true, got ok=false")
 	}
 
-	if err := d.Retry(ctx, rec.ID, driver.RetryUpdate{
+	if err := d.Retry(ctx, rec.ID, lease.Token, t0, driver.RetryUpdate{
 		RunAt:     retryAt,
 		Attempts:  1,
 		LastError: "boom",
@@ -221,7 +221,7 @@ func TestMemory_RetryMovesInflightBackToScheduled(t *testing.T) {
 		t.Fatalf("expected inflight size 0, got %d", d.InflightSize("default"))
 	}
 
-	_, ok, err = d.Reserve(ctx, "default", t0)
+	_, _, ok, err = d.Reserve(ctx, "default", t0, 30*time.Second)
 	if err != nil {
 		t.Fatalf("reserve failed: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestMemory_RetryMovesInflightBackToScheduled(t *testing.T) {
 		t.Fatalf("expected ok=false before retryAt, got ok=true")
 	}
 
-	got, ok, err := d.Reserve(ctx, "default", retryAt)
+	got, _, ok, err := d.Reserve(ctx, "default", retryAt, 30*time.Second)
 	if err != nil {
 		t.Fatalf("reserve failed: %v", err)
 	}
