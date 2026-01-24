@@ -19,6 +19,7 @@ type leaseFailDriver struct {
 	extendCalls int
 }
 
+// HELPERS.
 func (d *leaseFailDriver) Enqueue(ctx context.Context, rec driver.JobRecord) error {
 	return d.inner.Enqueue(ctx, rec)
 }
