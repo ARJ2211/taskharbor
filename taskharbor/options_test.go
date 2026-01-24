@@ -28,6 +28,14 @@ func TestOptions_Defaults(t *testing.T) {
 	if cfg.DefaultQueue != DefaultQueue {
 		t.Fatalf("expected default queue %s, got %s", DefaultQueue, cfg.DefaultQueue)
 	}
+
+	if cfg.LeaseDuration != 30*time.Second {
+		t.Fatalf("expected default lease duration 30s, got %v", cfg.LeaseDuration)
+	}
+
+	if cfg.HeartbeatInterval != 10*time.Second {
+		t.Fatalf("expected default heartbeat interval 10s, got %v", cfg.HeartbeatInterval)
+	}
 }
 
 func TestOptions_Overrides(t *testing.T) {
@@ -36,6 +44,8 @@ func TestOptions_Overrides(t *testing.T) {
 		WithConcurrency(9),
 		WithPollInterval(50*time.Millisecond),
 		WithDefaultQueue("critical"),
+		WithLeaseDuration(12*time.Second),
+		WithHeartbeatInterval(2*time.Second),
 	)
 
 	if _, ok := cfg.Codec.(dummyCodec); !ok {
@@ -53,6 +63,14 @@ func TestOptions_Overrides(t *testing.T) {
 	if cfg.DefaultQueue != "critical" {
 		t.Fatalf("expected default queue critical, got %s", cfg.DefaultQueue)
 	}
+
+	if cfg.LeaseDuration != 12*time.Second {
+		t.Fatalf("expected lease duration 12s, got %v", cfg.LeaseDuration)
+	}
+
+	if cfg.HeartbeatInterval != 2*time.Second {
+		t.Fatalf("expected heartbeat interval 2s, got %v", cfg.HeartbeatInterval)
+	}
 }
 
 func TestOptions_Normalization(t *testing.T) {
@@ -61,6 +79,8 @@ func TestOptions_Normalization(t *testing.T) {
 		WithConcurrency(0),
 		WithPollInterval(0),
 		WithDefaultQueue(""),
+		WithLeaseDuration(0),
+		WithHeartbeatInterval(0),
 	)
 
 	if cfg.Codec == nil {
@@ -77,5 +97,26 @@ func TestOptions_Normalization(t *testing.T) {
 
 	if cfg.DefaultQueue != DefaultQueue {
 		t.Fatalf("expected default queue normalized to %s, got %s", DefaultQueue, cfg.DefaultQueue)
+	}
+
+	if cfg.LeaseDuration != 30*time.Second {
+		t.Fatalf("expected lease duration normalized to 30s, got %v", cfg.LeaseDuration)
+	}
+
+	if cfg.HeartbeatInterval != 10*time.Second {
+		t.Fatalf("expected heartbeat interval normalized to 10s, got %v", cfg.HeartbeatInterval)
+	}
+
+}
+
+func TestOptions_HeartbeatClampedBelowLease(t *testing.T) {
+	cfg := applyOptions(
+		WithLeaseDuration(3*time.Second),
+		WithHeartbeatInterval(10*time.Second),
+	)
+
+	// clamp => lease/3 => 1s
+	if cfg.HeartbeatInterval != time.Second {
+		t.Fatalf("expected heartbeat clamped to 1s, got %v", cfg.HeartbeatInterval)
 	}
 }

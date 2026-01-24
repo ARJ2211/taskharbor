@@ -34,9 +34,6 @@ import (
 	"github.com/ARJ2211/taskharbor/taskharbor/driver"
 )
 
-// Default lease duration.
-const defaultLeaseDuration = 30 * time.Second
-
 /*
 The worker will poll the driver, dispatch jobs to the handlers,
 and calls the Ack/Fail on completion or termination.
@@ -120,7 +117,7 @@ func (w *Worker) Run(ctx context.Context) error {
 
 		now := w.cfg.Clock.Now()
 
-		rec, lease, ok, err := w.driver.Reserve(ctx, w.queue, now, defaultLeaseDuration)
+		rec, lease, ok, err := w.driver.Reserve(ctx, w.queue, now, w.cfg.LeaseDuration)
 		if err != nil {
 			// If context was cancelled gracefully shut down
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
