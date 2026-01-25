@@ -3,6 +3,8 @@ package memory
 import (
 	"container/heap"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"sync"
 	"time"
@@ -42,8 +44,16 @@ Internal per-queue state.
 type queueState struct {
 	runnable  []driver.JobRecord
 	scheduled scheduledHeap
-	inflight  map[string]driver.JobRecord
+	inflight  map[string]inflightItem
 	dlq       map[string]DLQItem
+}
+
+/*
+Track the inflight items as record + lease.
+*/
+type inflightItem struct {
+	rec   driver.JobRecord
+	lease driver.Lease
 }
 
 /*
@@ -71,13 +81,25 @@ func (d *Driver) getQueueLocked(queue string) *queueState {
 	qs = &queueState{
 		runnable:  make([]driver.JobRecord, 0),
 		scheduled: make(scheduledHeap, 0),
-		inflight:  make(map[string]driver.JobRecord),
+		inflight:  make(map[string]inflightItem),
 		dlq:       make(map[string]DLQItem),
 	}
 	heap.Init(&qs.scheduled)
 
 	d.queues[queue] = qs
 	return qs
+}
+
+/*
+This function will help
+issue a new lease token.
+*/
+func newLeaseToken() (driver.LeaseToken, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return driver.LeaseToken(hex.EncodeToString(b)), nil
 }
 
 /*
@@ -92,6 +114,24 @@ func (qs *queueState) promoteDueLocked(now time.Time) {
 		}
 		rec := heap.Pop(&qs.scheduled).(driver.JobRecord)
 		qs.runnable = append(qs.runnable, rec)
+	}
+}
+
+/*
+This function will reclaim explired leases inside
+the Reserve function.
+*/
+func (d *Driver) reclaimExpiredLeaseLocked(queue string, qs *queueState, now time.Time) {
+	for id, it := range qs.inflight {
+		if !it.lease.ExpiresAt.After(now) {
+			delete(qs.inflight, id)
+			delete(d.inflightIndex, id)
+
+			rec := it.rec
+			// Make it run immediately
+			rec.RunAt = time.Time{}
+			qs.runnable = append(qs.runnable, rec)
+		}
 	}
 }
 
@@ -155,6 +195,7 @@ func (d *Driver) Reserve(
 	}
 
 	qs := d.getQueueLocked(queue)
+	d.reclaimExpiredLeaseLocked(queue, qs, now)
 	qs.promoteDueLocked(now)
 
 	if len(qs.runnable) == 0 {
@@ -164,13 +205,21 @@ func (d *Driver) Reserve(
 	rec := qs.runnable[0]
 	qs.runnable = qs.runnable[1:]
 
-	qs.inflight[rec.ID] = rec
-	d.inflightIndex[rec.ID] = queue
+	tok, err := newLeaseToken()
+	if err != nil {
+		return driver.JobRecord{}, driver.Lease{}, false, err
+	}
 
 	lease := driver.Lease{
-		Token:     driver.LeaseToken(""),
+		Token:     tok,
 		ExpiresAt: now.Add(leaseFor),
 	}
+
+	qs.inflight[rec.ID] = inflightItem{
+		rec:   rec,
+		lease: lease,
+	}
+	d.inflightIndex[rec.ID] = queue
 
 	return rec, lease, true, nil
 }
@@ -215,11 +264,19 @@ func (d *Driver) ExtendLease(
 		return driver.Lease{}, driver.ErrJobNotInflight
 	}
 
-	// TODO: Token enforement can come later.
-	return driver.Lease{
-		Token:     token,
-		ExpiresAt: now.Add(leaseFor),
-	}, nil
+	_, qs, it, err := d.getInflightLocked(id)
+
+	if err != nil {
+		return driver.Lease{}, err
+	}
+
+	if err := validateLease(it, token, now); err != nil {
+		return driver.Lease{}, err
+	}
+
+	it.lease.ExpiresAt = now.Add(leaseFor)
+	qs.inflight[id] = it
+	return it.lease, nil
 }
 
 /*
@@ -254,6 +311,15 @@ func (d *Driver) Ack(
 
 	if _, ok := qs.inflight[id]; !ok {
 		return driver.ErrJobNotInflight
+	}
+
+	_, qs, it, err := d.getInflightLocked(id)
+	if err != nil {
+		return err
+	}
+
+	if err := validateLease(it, token, now); err != nil {
+		return err
 	}
 
 	delete(qs.inflight, id)
@@ -299,22 +365,24 @@ func (d *Driver) Retry(
 		return driver.ErrJobNotInflight
 	}
 
-	rec, ok := qs.inflight[id]
-	if !ok {
-		return driver.ErrJobNotInflight
+	_, qs, it, err := d.getInflightLocked(id)
+	if err != nil {
+		return err
+	}
+
+	if err := validateLease(it, token, now); err != nil {
+		return err
 	}
 
 	delete(qs.inflight, id)
 	delete(d.inflightIndex, id)
 
+	rec := it.rec
 	rec.RunAt = upd.RunAt
 	rec.Attempts = upd.Attempts
 	rec.LastError = upd.LastError
 	rec.FailedAt = upd.FailedAt
 
-	// ReQueue it based on the runAt. If RunAt is in the PAST
-	// promote due locked will move it immidiately during reserve
-	// to the queue
 	if rec.RunAt.IsZero() {
 		qs.runnable = append(qs.runnable, rec)
 		return nil
@@ -354,20 +422,23 @@ func (d *Driver) Fail(
 		return driver.ErrJobNotInflight
 	}
 
-	rec, ok := qs.inflight[id]
-	if !ok {
-		return driver.ErrJobNotInflight
+	_, qs, it, err := d.getInflightLocked(id)
+	if err != nil {
+		return err
+	}
+
+	if err := validateLease(it, token, now); err != nil {
+		return err
 	}
 
 	delete(qs.inflight, id)
 	delete(d.inflightIndex, id)
 
 	qs.dlq[id] = DLQItem{
-		Record:   rec,
+		Record:   it.rec,
 		Reason:   reason,
 		FailedAt: now.UTC(),
 	}
-
 	return nil
 }
 
@@ -430,6 +501,36 @@ func (d *Driver) RunnableSize(queue string) int {
 		return 0
 	}
 	return len(qs.runnable)
+}
+
+/*
+Validator to get inflight jobs (Locked) and
+validate their lease.
+*/
+func (d *Driver) getInflightLocked(id string) (string, *queueState, inflightItem, error) {
+	q, ok := d.inflightIndex[id]
+	if !ok {
+		return "", nil, inflightItem{}, driver.ErrJobNotInflight
+	}
+	qs := d.queues[q]
+	if qs == nil {
+		return "", nil, inflightItem{}, driver.ErrJobNotInflight
+	}
+	it, ok := qs.inflight[id]
+	if !ok {
+		return "", nil, inflightItem{}, driver.ErrJobNotInflight
+	}
+	return q, qs, it, nil
+}
+
+func validateLease(it inflightItem, token driver.LeaseToken, now time.Time) error {
+	if !it.lease.ExpiresAt.After(now) {
+		return driver.ErrLeaseExpired
+	}
+	if it.lease.Token != token {
+		return driver.ErrLeaseMismatch
+	}
+	return nil
 }
 
 /*
