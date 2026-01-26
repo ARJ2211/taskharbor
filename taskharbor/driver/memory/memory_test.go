@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -241,5 +242,106 @@ func TestMemory_RetryMovesInflightBackToScheduled(t *testing.T) {
 	}
 	if got.LastError != "boom" {
 		t.Fatalf("expected last_error=boom, got %s", got.LastError)
+	}
+}
+
+func TestMemory_AckRejectsLeaseMismatch(t *testing.T) {
+	ctx := context.Background()
+	d := New()
+
+	now := time.Date(2026, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	rec := driver.JobRecord{
+		ID:        "job-lease-mismatch",
+		Type:      "task.once",
+		Payload:   []byte(`{}`),
+		Queue:     "default",
+		CreatedAt: now,
+	}
+
+	if err := d.Enqueue(ctx, rec); err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+
+	_, lease, ok, err := d.Reserve(ctx, "default", now, 30*time.Second)
+	if err != nil {
+		t.Fatalf("reserve failed: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected ok=true, got ok=false")
+	}
+	if lease.Token == "" {
+		t.Fatalf("expected non-empty lease token")
+	}
+
+	// wrong token should be rejected
+	if err := d.Ack(ctx, rec.ID, driver.LeaseToken("wrong"), now); err == nil {
+		t.Fatalf("expected error for lease mismatch, got nil")
+	} else if !errors.Is(err, driver.ErrLeaseMismatch) {
+		t.Fatalf("expected ErrLeaseMismatch, got %v", err)
+	}
+
+	if d.InflightSize("default") != 1 {
+		t.Fatalf("expected inflight size 1, got %d", d.InflightSize("default"))
+	}
+
+	// correct token should succeed
+	if err := d.Ack(ctx, rec.ID, lease.Token, now); err != nil {
+		t.Fatalf("ack failed: %v", err)
+	}
+}
+
+func TestMemory_ReclaimExpiredLeaseMakesJobRunnableAgain(t *testing.T) {
+	ctx := context.Background()
+	d := New()
+
+	t0 := time.Date(2026, 1, 20, 10, 0, 0, 0, time.UTC)
+
+	rec := driver.JobRecord{
+		ID:        "job-lease-expire-1",
+		Type:      "task.once",
+		Payload:   []byte(`{}`),
+		Queue:     "default",
+		CreatedAt: t0,
+	}
+
+	if err := d.Enqueue(ctx, rec); err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+
+	_, lease1, ok, err := d.Reserve(ctx, "default", t0, 10*time.Second)
+	if err != nil {
+		t.Fatalf("reserve failed: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected ok=true, got ok=false")
+	}
+
+	// before expiry: should not deliver
+	_, _, ok, err = d.Reserve(ctx, "default", t0.Add(5*time.Second), 10*time.Second)
+	if err != nil {
+		t.Fatalf("reserve failed: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected ok=false before lease expiry, got ok=true")
+	}
+
+	// after expiry: reserve should reclaim + re-lease
+	_, lease2, ok, err := d.Reserve(ctx, "default", t0.Add(11*time.Second), 10*time.Second)
+	if err != nil {
+		t.Fatalf("reserve failed: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected ok=true after lease expiry, got ok=false")
+	}
+	if lease2.Token == "" {
+		t.Fatalf("expected non-empty lease token")
+	}
+	if lease2.Token == lease1.Token {
+		t.Fatalf("expected new lease token after reclaim")
+	}
+
+	if err := d.Ack(ctx, rec.ID, lease2.Token, t0.Add(11*time.Second)); err != nil {
+		t.Fatalf("ack failed: %v", err)
 	}
 }

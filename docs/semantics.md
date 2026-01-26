@@ -33,15 +33,26 @@ This document defines TaskHarbor runtime semantics. These rules are what users c
 
 ## Leases and crash recovery
 
-- Reserve returns a lease token and lease expiry time.
-- While lease is valid, no other worker should receive the job.
-- If worker crashes or fails to ack, lease expires and job becomes runnable again.
-- Workers may extend leases for long-running jobs via heartbeat.
+Reserve returns a lease token and lease expiry time.
 
-Implication
+Rules:
+
+- While a lease is valid, no other worker should receive the job.
+- Workers may extend leases for long-running jobs via heartbeat (ExtendLease).
+- If a worker crashes or fails to ack, the lease expires and the job becomes runnable again.
+- Ack/Retry/Fail must provide the current lease token. If the token is stale or the lease is expired, the driver must reject the operation (no mutation).
+
+What this means in practice:
 
 - A job may execute more than once if a worker crashes after performing side effects but before ack.
-- Idempotent handlers are required.
+- Idempotent handlers are required for correctness.
+- Heartbeats reduce duplicate processing for long-running handlers, but do not eliminate at-least-once behavior.
+
+## Dead-letter queue (DLQ)
+
+- DLQ stores jobs that exceeded max_attempts (or are explicitly dead-lettered).
+- DLQ entries retain failure info for inspection.
+- Jobs can be requeued from DLQ (CLI supports later milestones).
 
 ## Idempotency key
 
@@ -49,12 +60,6 @@ Implication
 - If the same key is enqueued again, driver returns the existing job id and does not create a duplicate.
 - Idempotency_key only dedupes enqueue, not execution side effects.
 - Use it to prevent duplicate job creation (double submits, retries at API layer).
-
-## Dead-letter queue (DLQ)
-
-- DLQ stores jobs that exceeded max_attempts (or are explicitly dead-lettered).
-- DLQ entries retain failure info for inspection.
-- Jobs can be requeued from DLQ (CLI supports later milestones).
 
 ## Workflows (overview)
 
