@@ -175,6 +175,72 @@ func (d *Driver) ExtendLease(
 
 }
 
+/*
+This function will Ack successful completion of a leased
+job. This job will be moved to a terminal state.
+*/
+func (d *Driver) Ack(
+	ctx context.Context,
+	id string,
+	token driver.LeaseToken,
+	now time.Time,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if err := d.ensureOpen(); err != nil {
+		return err
+	}
+
+	return ErrNotImplemented
+}
+
+/*
+This function will move a failed leased job into a runnable
+or a scheduled queue for later attempt
+*/
+func (d *Driver) Retry(
+	ctx context.Context,
+	id string,
+	token driver.LeaseToken,
+	now time.Time,
+	upd driver.RetryUpdate,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if err := d.ensureOpen(); err != nil {
+		return err
+	}
+
+	return ErrNotImplemented
+}
+
+/*
+This function will move a failed job (after retrying) into
+a dead letter queue. This should also validate the lease ownership
+so that only one worker may add it to a DLQ
+*/
+func (d *Driver) Fail(
+	ctx context.Context,
+	id string,
+	token driver.LeaseToken,
+	now time.Time,
+	reason string,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if err := d.ensureOpen(); err != nil {
+		return err
+	}
+
+	return ErrNotImplemented
+}
+
 var (
 	// Keep message consistent with memory driver.
 	ErrDriverClosed   = errors.New("driver is closed")
