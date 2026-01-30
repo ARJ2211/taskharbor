@@ -92,6 +92,43 @@ func (d *Driver) Close() error {
 	return nil
 }
 
+/*
+This functino will validate if the pgSQL driver
+is open. This will be used in all the interface
+methods other than Close().
+*/
+func (d *Driver) ensureOpen() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.closed {
+		return ErrDriverClosed
+	}
+	if d.pool == nil {
+		return ErrNilPool
+	}
+
+	return nil
+}
+
+/*
+This function will enqueue a new job record. This will
+add a new job record into the jobs table and make the
+job runnable or schedule it for later depending on
+rec.RunAt
+*/
+func (d *Driver) Enqueue(ctx context.Context, rec driver.JobRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if err := d.ensureOpen(); err != nil {
+		return err
+	}
+
+	return ErrNotImplemented
+}
+
 var (
 	// Keep message consistent with memory driver.
 	ErrDriverClosed   = errors.New("driver is closed")
