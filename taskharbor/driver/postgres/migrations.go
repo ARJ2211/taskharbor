@@ -39,6 +39,34 @@ migrations in the version order.
   - records the migration version on success
 */
 func ApplyMigrations(ctx context.Context, pool *pgxpool.Pool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if pool == nil {
+		return ErrNilPool
+	}
+
+	migs, err := loadMigrations()
+	if err != nil {
+		return err
+	}
+
+	applied, err := loadAppliedMigrations(ctx, pool)
+	if err != nil {
+		return nil
+	}
+
+	for _, m := range migs {
+		if applied[m.version] == true {
+			continue
+		}
+
+		if err := applyOne(ctx, pool, m); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
