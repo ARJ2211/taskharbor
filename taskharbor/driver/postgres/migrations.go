@@ -3,11 +3,14 @@ package postgres
 import (
 	"context"
 	"embed"
+	"errors"
+	"fmt"
 	"io/fs"
 	"path"
 	"sort"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -81,4 +84,43 @@ func loadMigrations() ([]migration, error) {
 	})
 
 	return migs, nil
+}
+
+/*
+This function will return a set of
+migration versions that have already
+been applied by querying th_schema_migrations
+
+(If table does not exist, run the migrations)
+*/
+func loadAppliedMigrations(
+	ctx context.Context, pool *pgxpool.Pool,
+) (map[string]bool, error) {
+	rows, err := pool.Query(ctx, "select version from th_schema_migrations")
+	if err != nil {
+		// Fresh DB; table does not exist.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+			return map[string]bool{}, nil
+		}
+		return nil, err
+	}
+	defer rows.Close()
+
+	applied := map[string]bool{}
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, fmt.Errorf(
+				"scan th_schema_migrations row: %w", err)
+		}
+		applied[v] = true
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf(
+			"iterate th_schema_migrations: %w", err)
+	}
+
+	return applied, nil
 }
