@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: taskharbor-postgres
+    environment:
+      POSTGRES_USER: taskharbor
+      POSTGRES_PASSWORD: taskharbor
+      POSTGRES_DB: taskharbor
+    ports:
+      - "5432:5432"
+    volumes:
+      - taskharbor_pgdata:/var/lib/postgresql/data
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskharbor -d taskharbor"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  taskharbor_pgdata:
