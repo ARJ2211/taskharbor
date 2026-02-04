@@ -2,12 +2,15 @@ package postgres
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/ARJ2211/taskharbor/taskharbor/driver"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -92,6 +95,18 @@ func (d *Driver) Close() error {
 	}
 
 	return nil
+}
+
+/*
+This function will help
+issue a new lease token.
+*/
+func newLeaseToken() (driver.LeaseToken, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return driver.LeaseToken(hex.EncodeToString(b)), nil
 }
 
 /*
@@ -203,11 +218,108 @@ func (d *Driver) Reserve(
 		return driver.JobRecord{}, driver.Lease{}, false, err
 	}
 
+	if leaseFor <= 0 {
+		return driver.JobRecord{}, driver.Lease{}, false,
+			driver.ErrInvalidLeaseDuration
+	}
+
 	if err := d.ensureOpen(); err != nil {
 		return driver.JobRecord{}, driver.Lease{}, false, err
 	}
 
-	return driver.JobRecord{}, driver.Lease{}, false, ErrNotImplemented
+	if strings.TrimSpace(queue) == "" {
+		return driver.JobRecord{}, driver.Lease{}, false, driver.ErrQueueRequired
+	}
+
+	tok, err := newLeaseToken()
+	if err != nil {
+		return driver.JobRecord{}, driver.Lease{}, false, err
+	}
+
+	now = now.UTC()
+	expiresAt := now.Add(leaseFor).UTC()
+
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return driver.JobRecord{}, driver.Lease{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var (
+		id             string
+		typ            string
+		q              string
+		payload        []byte
+		runAtPtr       *time.Time
+		timeoutNanos   int64
+		idemPtr        *string
+		createdAt      time.Time
+		attempts       int
+		maxAttempts    int
+		lastError      string
+		failedAtPtr    *time.Time
+		leaseTokStr    string
+		leaseExpiresAt time.Time
+	)
+
+	err = tx.QueryRow(ctx, QReserve, queue, now, string(tok), expiresAt).Scan(
+		&id,
+		&typ,
+		&q,
+		&payload,
+		&runAtPtr,
+		&timeoutNanos,
+		&idemPtr,
+		&createdAt,
+		&attempts,
+		&maxAttempts,
+		&lastError,
+		&failedAtPtr,
+		&leaseTokStr,
+		&leaseExpiresAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return driver.JobRecord{}, driver.Lease{}, false, nil
+		}
+		return driver.JobRecord{}, driver.Lease{}, false, err
+	}
+
+	rec := driver.JobRecord{
+		ID:             id,
+		Type:           typ,
+		Queue:          q,
+		Payload:        payload,
+		RunAt:          time.Time{},
+		Timeout:        time.Duration(timeoutNanos),
+		IdempotencyKey: "",
+		CreatedAt:      createdAt.UTC(),
+		Attempts:       attempts,
+		MaxAttempts:    maxAttempts,
+		LastError:      lastError,
+		FailedAt:       time.Time{},
+	}
+
+	if runAtPtr != nil {
+		rec.RunAt = runAtPtr.UTC()
+	}
+	if failedAtPtr != nil {
+		rec.FailedAt = failedAtPtr.UTC()
+	}
+	if idemPtr != nil {
+		rec.IdempotencyKey = *idemPtr
+	}
+
+	lease := driver.Lease{
+		Token:     driver.LeaseToken(leaseTokStr),
+		ExpiresAt: leaseExpiresAt.UTC(),
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return driver.JobRecord{}, driver.Lease{}, false, err
+	}
+
+	return rec, lease, true, nil
 }
 
 /*
