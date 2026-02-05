@@ -135,3 +135,46 @@ RETURNING
   j.lease_token,
   j.lease_expires_at
 `
+
+/*
+QExtendLeaseAtomic extends a lease in a single atomic statement.
+
+Why we do this:
+- It avoids BEGIN/tx + FOR UPDATE, which can block and (in our case) led to hangs.
+- The check and the update happen together, so it's still correct:
+  - job must be inflight
+  - token must match
+  - lease must still be valid at the provided "now"
+
+- If any of those conditions fail, 0 rows are affected (no partial updates).
+
+Important:
+  - We use the caller-provided "now" instead of database NOW() to keep semantics
+    consistent across drivers and tests.
+*/
+const QExtendLeaseAtomic = `
+UPDATE th_jobs
+SET lease_expires_at = $1
+WHERE id = $2
+  AND status = 'inflight'
+  AND lease_token = $3
+  AND lease_expires_at > $4
+RETURNING lease_expires_at
+`
+
+/*
+QLeaseState fetches the current lease-related state for a job.
+
+Why we do this:
+- QExtendLeaseAtomic returns no rows when it doesn't extend the lease.
+- We still want to return the same errors as the memory driver:
+  - not inflight
+  - expired (takes precedence over mismatch)
+  - token mismatch
+  - This query is used only to classify that "0 rows updated" case without relying on a transaction.
+*/
+const QLeaseState = `
+SELECT status, lease_token, lease_expires_at
+FROM th_jobs
+WHERE id = $1
+`
