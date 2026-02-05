@@ -178,3 +178,45 @@ SELECT status, lease_token, lease_expires_at
 FROM th_jobs
 WHERE id = $1
 `
+
+/*
+QAckAtomic performs the success-path acknowledgement in one atomic statement.
+
+It marks the job as terminal (status='done') and clears lease fields, but only if:
+- the job is currently inflight,
+- the provided lease_token matches,
+- and the lease has not expired at the provided "now" (we use caller-provided time, not DB NOW()).
+
+Using a single UPDATE avoids races and lock-wait issues. If it returns no rows, the caller should
+run QAckState to classify the failure into the correct semantic error (not inflight / expired / mismatch).
+*/
+const QAckAtomic = `
+UPDATE th_jobs
+SET status = 'done',
+    lease_token = NULL,
+    lease_expires_at = NULL
+WHERE id = $1
+  AND status = 'inflight'
+  AND lease_token = $2
+  AND lease_expires_at > $3
+RETURNING id
+`
+
+/*
+QAckState is the fallback read used to classify why QAckAtomic did not acknowledge anything.
+
+When QAckAtomic returns no rows, it could mean:
+- the job does not exist,
+- the job is not inflight (ready/dlq/done),
+- the lease is expired at "now",
+- or the lease token mismatched.
+
+We read status + lease fields and apply the same precedence as the in-memory driver:
+not inflight -> expired -> token mismatch. This keeps user-visible semantics consistent
+across drivers while keeping the success path fully atomic.
+*/
+const QAckState = `
+SELECT status, lease_token, lease_expires_at
+FROM th_jobs
+WHERE id = $1
+`
