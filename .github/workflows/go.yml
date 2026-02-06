@@ -32,3 +32,6 @@ jobs:
 
     - name: Test Race
       run: go test -v -race ./...
+
+    - name: Test Race with count 10
+      run: go test -v -race -count=10 ./...
