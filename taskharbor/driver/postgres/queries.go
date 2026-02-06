@@ -257,3 +257,37 @@ SELECT status, lease_token, lease_expires_at
 FROM th_jobs
 WHERE id = $1
 `
+
+/*
+QFailAtomic performs the DLQ transition in one atomic statement.
+
+It moves an inflight job to 'dlq', clears the lease, and stores dlq_reason + dlq_failed_at,
+but only if the lease token matches and the lease is still valid at "now".
+*/
+const QFailAtomic = `
+UPDATE th_jobs
+SET status = 'dlq',
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    dlq_reason = $4,
+    dlq_failed_at = $5
+WHERE id = $1
+  AND status = 'inflight'
+  AND lease_token = $2
+  AND lease_expires_at > $3
+RETURNING id
+`
+
+/*
+QFailState is the fallback read when QFailAtomic affects 0 rows.
+
+Used to classify:
+- not inflight (ready/done/dlq/missing)
+- expired lease at now
+- lease token mismatch
+*/
+const QFailState = `
+SELECT status, lease_token, lease_expires_at
+FROM th_jobs
+WHERE id = $1
+`

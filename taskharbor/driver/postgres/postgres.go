@@ -554,7 +554,51 @@ func (d *Driver) Fail(
 		return err
 	}
 
-	return ErrNotImplemented
+	now = now.UTC()
+	if reason == "" {
+		reason = "failed"
+	}
+
+	var ignored string
+	err := d.pool.QueryRow(
+		ctx,
+		QFailAtomic,
+		id,
+		string(token),
+		now,
+		reason,
+		now,
+	).Scan(&ignored)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+
+	var status string
+	var dbTok *string
+	var dbExp *time.Time
+
+	err2 := d.pool.QueryRow(ctx, QFailState, id).Scan(&status, &dbTok, &dbExp)
+	if err2 != nil {
+		if errors.Is(err2, pgx.ErrNoRows) {
+			return driver.ErrJobNotInflight
+		}
+		return err2
+	}
+
+	if status != "inflight" || dbTok == nil || dbExp == nil {
+		return driver.ErrJobNotInflight
+	}
+	if !dbExp.UTC().After(now) {
+		return driver.ErrLeaseExpired
+	}
+	if driver.LeaseToken(*dbTok) != token {
+		return driver.ErrLeaseMismatch
+	}
+
+	return driver.ErrJobNotInflight
 }
 
 var (
