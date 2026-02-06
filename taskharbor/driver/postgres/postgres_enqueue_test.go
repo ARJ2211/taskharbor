@@ -22,6 +22,7 @@ func TestEnqueue_ValidateFirst(t *testing.T) {
 func TestEnqueue_PersistsFields(t *testing.T) {
 	wd, _ := os.Getwd()
 	_ = envutil.LoadRepoDotenv(wd)
+
 	dsn := os.Getenv("TASKHARBOR_TEST_DSN")
 	if dsn == "" {
 		t.Skip("TASKHARBOR_TEST_DSN not set")
@@ -40,8 +41,9 @@ func TestEnqueue_PersistsFields(t *testing.T) {
 		t.Fatalf("ApplyMigrations: %v", err)
 	}
 
-	if _, err := pool.Exec(ctx, `TRUNCATE th_jobs`); err != nil {
-		t.Fatalf("truncate: %v", err)
+	// DELETE is less lock-aggressive than TRUNCATE and avoids CI stalls.
+	if _, err := pool.Exec(ctx, `DELETE FROM th_jobs`); err != nil {
+		t.Fatalf("cleanup: %v", err)
 	}
 
 	d, err := NewWithPool(pool)
@@ -49,7 +51,8 @@ func TestEnqueue_PersistsFields(t *testing.T) {
 		t.Fatalf("NewWithPool: %v", err)
 	}
 
-	now := time.Now().UTC()
+	// Use deterministic time (and microsecond precision for Postgres TIMESTAMPTZ).
+	now := time.Date(2026, 2, 6, 21, 12, 27, 747854050, time.UTC).Truncate(time.Microsecond)
 
 	rec := driver.JobRecord{
 		ID:             "job_1",
@@ -103,7 +106,7 @@ func TestEnqueue_PersistsFields(t *testing.T) {
 	// scheduled job
 	rec2 := rec
 	rec2.ID = "job_2"
-	rec2.RunAt = now.Add(1 * time.Hour)
+	rec2.RunAt = now.Add(1 * time.Hour).Truncate(time.Microsecond)
 	rec2.IdempotencyKey = "k1"
 
 	if err := d.Enqueue(ctx, rec2); err != nil {
@@ -116,8 +119,12 @@ func TestEnqueue_PersistsFields(t *testing.T) {
 	if err := row2.Scan(&runAt2, &idemKey2); err != nil {
 		t.Fatalf("scan2: %v", err)
 	}
-	if runAt2.UTC() != rec2.RunAt.UTC() {
-		t.Fatalf("run_at mismatch: got %v want %v", runAt2.UTC(), rec2.RunAt.UTC())
+
+	got := runAt2.UTC().Truncate(time.Microsecond)
+	want := rec2.RunAt.UTC().Truncate(time.Microsecond)
+
+	if !got.Equal(want) {
+		t.Fatalf("run_at mismatch: got %v want %v", got, want)
 	}
 	if idemKey2 == nil || *idemKey2 != "k1" {
 		t.Fatalf("idempotency_key mismatch: got %v want k1", idemKey2)
