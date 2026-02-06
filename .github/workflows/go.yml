@@ -10,22 +10,46 @@ on:
     branches: [ "main" ]
 
 jobs:
-
   build:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: taskharbor
+          POSTGRES_PASSWORD: taskharbor
+          POSTGRES_DB: taskharbor_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U taskharbor -d taskharbor_test"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+
+    env:
+      TASKHARBOR_TEST_DSN: postgres://taskharbor:taskharbor@localhost:5432/taskharbor_test?sslmode=disable
+
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.25'
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.25'
 
-    - name: Build
-      run: go build -v ./...
+      - name: Clean test cache
+        run: go clean -testcache
 
-    - name: Test
-      run: go test -v ./...
+      - name: Build
+        run: go build -v ./...
 
-    - name: Test Race
-      run: go test -v -race ./...
+      - name: Test
+        run: go test -v ./...
+
+      - name: Test Race
+        run: go test -v -race ./...
+
+      - name: Test Race with count 10
+        run: go test -v -race -count=10 ./...
