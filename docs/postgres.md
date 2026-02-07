@@ -1,125 +1,119 @@
-## SQL schema draft
+# Postgres Driver
 
-```sql
--- Table: th_jobs
--- Purpose: single-table model for jobs + leases + DLQ, mirroring memory driver semantics.
+This doc covers how to run TaskHarbor using the Postgres driver, including migrations, env vars, tests, and the demo example.
 
-CREATE TABLE IF NOT EXISTS th_jobs (
-  id               TEXT PRIMARY KEY,
-  type             TEXT NOT NULL,
-  queue            TEXT NOT NULL,
-  payload          BYTEA NOT NULL,
+## What you get (Milestone 5)
 
-  -- Scheduling: RunAt == zero in Go means runnable now. We store that as NULL.
-  run_at           TIMESTAMPTZ NULL,
+- Durable job storage in Postgres
+- Scheduling via run_at
+- Leases (visibility timeouts) and crash recovery
+- ExtendLease heartbeat support
+- Ack / Retry / Fail (DLQ) with strict lease validation
+- Integration tests that mirror memory driver behavior
+- A runnable Postgres demo example (basic worker + scheduled jobs)
 
-  -- Duration stored as nanoseconds (time.Duration is int64 nanos).
-  timeout_nanos    BIGINT NOT NULL DEFAULT 0 CHECK (timeout_nanos >= 0),
+Not included until Milestone 6:
 
-  created_at       TIMESTAMPTZ NOT NULL,
+- Idempotency dedupe enforcement (unique constraint behavior)
+- Indexes and performance tuning
+- Fully idempotent ack/fail (no-op semantics under repeats)
 
-  attempts         INT NOT NULL DEFAULT 0 CHECK (attempts >= 0),
-  max_attempts     INT NOT NULL DEFAULT 0 CHECK (max_attempts >= 0),
+## Environment variables
 
-  last_error       TEXT NOT NULL DEFAULT '',
-  failed_at        TIMESTAMPTZ NULL,
+- TASKHARBOR_DSN
+  Used by examples and local runs.
 
-  -- State machine:
-  -- ready: eligible when due (run_at NULL or run_at <= now)
-  -- inflight: leased, not eligible unless lease is expired (reclaim)
-  -- dlq: terminal DLQ
-  -- done: terminal success (optional; could delete instead)
-  status           TEXT NOT NULL DEFAULT 'ready'
-                   CHECK (status IN ('ready','inflight','dlq','done')),
+- TASKHARBOR_TEST_DSN
+  Used by Postgres integration tests.
 
-  lease_token      TEXT NULL,
-  lease_expires_at TIMESTAMPTZ NULL,
+Recommended: put both in a repo-root .env file for local dev:
 
-  dlq_reason       TEXT NULL,
-  dlq_failed_at    TIMESTAMPTZ NULL,
+TASKHARBOR_DSN=postgres://taskharbor:taskharbor@localhost:5432/taskharbor?sslmode=disable
+TASKHARBOR_TEST_DSN=postgres://taskharbor:taskharbor@localhost:5432/taskharbor_test?sslmode=disable
 
-  -- Present in milestone 5 for storage; uniqueness/enforcement is milestone 6.
-  idempotency_key  TEXT NULL,
+## Running Postgres locally (Docker)
 
-  -- Consistency constraints
-  CONSTRAINT th_jobs_lease_pair_chk
-    CHECK ((lease_token IS NULL) = (lease_expires_at IS NULL)),
+If you have a docker-compose.yml in the repo, run:
 
-  CONSTRAINT th_jobs_inflight_requires_lease_chk
-    CHECK (status <> 'inflight' OR (lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)),
+docker compose up -d
 
-  CONSTRAINT th_jobs_dlq_requires_metadata_chk
-    CHECK (status <> 'dlq' OR (dlq_failed_at IS NOT NULL))
-);
+Then verify:
 
--- No indexes in milestone 5 (correctness first).
--- Indexes for reserve performance + lease reclaim land in milestone 6.
-```
+psql $TASKHARBOR_DSN -c "select 1"
 
-## Mapping rules (Go <-> Postgres)
+## Migrations
 
-### 1) time.Time zero values
+The Postgres driver ships with embedded SQL migrations.
 
-- JobRecord.RunAt.IsZero() maps to run_at = NULL
-- RetryUpdate.RunAt.IsZero() maps to run_at = NULL
-- FailedAt.IsZero() maps to failed_at = NULL
-- Lease.ExpiresAt is always non-zero when inflight; stored as lease_expires_at
+In code, run:
 
-### 2) status model
+- postgres.ApplyMigrations(ctx, pool)
 
-- ready
-    - not leased (lease_token/lease_expires_at are NULL)
-    - may be due now or scheduled later based on run_at
-- inflight
-    - leased; lease fields are present
-- dlq
-    - terminal dead-lettered job; dlq_failed_at set, dlq_reason set by Fail
-- done
-    - terminal success; set by Ack (alternative is DELETE on ack)
+This is used by:
 
-### 3) runnable query rules (used by Reserve)
+- integration tests (at start)
+- examples/basic_postgres (before worker runs)
 
-A job is runnable if:
+Migrations are safe to run multiple times.
 
-- queue matches
-- status is ready, OR status is inflight with an expired lease (reclaim case)
-- and it is due:
-    - run_at IS NULL OR run_at <= now
+## Schema overview
 
-Important parity detail with memory driver:
+The Postgres driver uses a single-table job model.
 
-- When reclaiming an expired inflight job, memory sets rec.RunAt = zero to run immediately.
-- Postgres Reserve must do the same by setting run_at = NULL when it steals an expired inflight lease.
+Key points:
 
-### 4) state transitions (high level)
+- run_at is NULL for runnable-now jobs (RunAt.IsZero in Go).
+- inflight jobs have (lease_token, lease_expires_at).
+- dlq and done are terminal states.
+- lease validation uses the provided now time, not database NOW().
 
-- Enqueue
-    - status = ready
-    - lease fields NULL
-    - dlq fields NULL
-    - run_at NULL if RunAt is zero, else set run_at
-- Reserve
-    - atomically pick a runnable row (including reclaiming expired inflight)
-    - set status = inflight
-    - set lease_token, lease_expires_at = now + leaseFor
-    - if reclaiming expired inflight, also set run_at = NULL
-- ExtendLease
-    - requires inflight + matching token + not expired
-    - updates lease_expires_at = now + leaseFor
-- Ack
-    - requires inflight + matching token + not expired
-    - sets status = done and clears lease fields (or delete row)
-- Retry
-    - requires inflight + matching token + not expired
-    - clears lease fields, status = ready
-    - updates run_at (NULL if zero) and Attempts/LastError/FailedAt from RetryUpdate
-- Fail
-    - requires inflight + matching token + not expired
-    - clears lease fields
-    - status = dlq
-    - dlq_reason = reason, dlq_failed_at = now.UTC()
+Timestamp precision:
 
-## Scope note (Milestone 5 vs Milestone 6)
+- Postgres TIMESTAMPTZ stores microsecond precision.
+- Tests should compare times at microsecond precision (use Truncate(time.Microsecond)).
 
-- Milestone 5 includes schema + migrations + correct driver behavior.
-- Milestone 6 adds hardening: idempotency uniqueness, performance indexes, and fully idempotent ack/fail semantics.
+## Running the Postgres demo
+
+A basic Postgres example mirrors the memory example but uses Postgres storage.
+
+From repo root:
+
+- Ensure TASKHARBOR_DSN is set (or present in .env).
+- Run:
+
+go run ./examples/basic_postgres
+
+The demo:
+
+- applies migrations
+- enqueues an immediate job
+- enqueues a few scheduled jobs
+- runs a worker and prints handler output
+
+Note:
+
+- examples cannot import taskharbor/internal/\* (Go internal package rules).
+- the example loads .env via godotenv.Load() instead of envutil.
+
+## Running tests
+
+From repo root, with TASKHARBOR_TEST_DSN set:
+
+go test ./...
+go test -race ./...
+
+Test hygiene notes:
+
+- Use DELETE FROM th_jobs between tests (TRUNCATE can take heavier locks).
+- Prefer fixed timestamps in tests for determinism.
+- When asserting run_at/failed_at values, compare with Truncate(time.Microsecond).
+
+## CI
+
+CI should:
+
+- start a Postgres service container
+- set TASKHARBOR_TEST_DSN
+- run go test ./... (and optionally -race)
+
+If CI failures happen only on timestamps, it is usually microsecond rounding. Normalize in tests.

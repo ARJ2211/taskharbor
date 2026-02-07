@@ -1,7 +1,7 @@
 # Driver Contract
 
-This document defines what a TaskHarbor driver must implement, and what the
-core runtime (client/worker) is responsible for.
+This document defines what a TaskHarbor driver must implement, and what the core runtime
+(client/worker) is responsible for.
 
 Principle
 
@@ -24,14 +24,19 @@ At minimum, a driver persists these fields:
 - last_error (string)
 - failed_at (time)
 
+Drivers may store additional fields (created_at, idempotency_key, dlq_reason, etc).
+
 ## States
 
-These are conceptual; drivers may store them however they want.
+These are conceptual; drivers may store them however they want:
 
 - ready: runnable now (run_at is zero or <= now)
-- scheduled: run_at is in the future
+- scheduled: run_at is in the future (often represented as ready + run_at > now)
 - inflight: reserved by a worker and protected by a lease
-- dlq: dead-lettered jobs
+- dlq: dead-lettered jobs (terminal)
+- done: successful jobs (terminal, optional; drivers may delete instead)
+
+If a driver uses done, Reserve must never return done jobs.
 
 ## Leases
 
@@ -42,49 +47,52 @@ A lease represents temporary ownership of an inflight job by a worker.
 - A worker may extend a lease for long-running jobs via ExtendLease.
 - If a worker crashes (or never acks), the lease will expire and the job becomes reservable again.
 
-The driver is responsible for enforcing leases. Core uses them by heartbeating and by passing the lease token into Ack/Retry/Fail.
+The driver is responsible for enforcing leases. Core uses them by heartbeating and by passing
+the lease token into Ack/Retry/Fail/ExtendLease.
 
-## Interface (milestone 4)
+## Interface
 
-Enqueue
+Enqueue(record)
 
-- Store a job in ready or scheduled state depending on run_at.
+- Store a job in ready or scheduled form depending on run_at.
 
 Reserve(queue, now, lease_for)
 
 - Return one runnable job for a queue and move it to inflight.
 - Must return (ok=false, nil error) when nothing runnable.
 - Must never return a job that is already inflight with a valid lease.
-- Must return a lease (token + expiry)s.
+- Must return a lease (token + expiry).
 - lease_for must be > 0.
+- Must reclaim expired inflight jobs (lazy reclaim during Reserve is acceptable).
+- Parity rule with memory driver: when reclaiming an expired inflight job, treat it as runnable now (run_at becomes zero/NULL).
 
 ExtendLease(id, token, now, lease_for)
 
 - Extend the existing lease for an inflight job.
-- Must validate the token and that the current lease has not expired.
+- Must validate token and that the current lease has not expired at now.
 - Must persist the new expiry.
 - May keep the same token or rotate it. If rotated, return the new token in the Lease.
 
 Ack(id, token, now)
 
-- Mark an inflight job successful (terminal).
-- Must validate token and expiry.
+- Mark an inflight job successful (terminal: done or delete).
+- Must validate token and expiry at now.
 - If token mismatches or lease expired, return a lease error and do not mutate state.
 
 Retry(id, token, now, update)
 
 - Move an inflight job back to ready/scheduled.
 - Persist failure metadata (attempts, last_error, failed_at) and the new run_at.
-- Must validate token and expiry before mutating state.
+- Must validate token and expiry at now before mutating state.
 - Core decides when to retry and whether to DLQ. Drivers only persist.
 
 Fail(id, token, now, reason)
 
 - Move an inflight job to DLQ (terminal).
-- Must validate token and expiry before mutating state.
+- Must validate token and expiry at now before mutating state.
 - Core decides when Fail should be used (max attempts exceeded or unrecoverable).
 
-Close
+Close()
 
 - Mark driver closed. Further operations should error.
 
@@ -104,4 +112,11 @@ Drivers must ensure expired inflight jobs become reservable again.
 Implementation strategies vary by backend:
 
 - memory driver can reclaim lazily during Reserve by scanning inflight and moving expired jobs back to ready
-- postgres driver can reclaim by selecting rows with lease_expires_at <= now, or by letting Reserve treat them as runnable
+- postgres driver can reclaim by treating expired inflight rows as runnable during Reserve (and writing a new lease token)
+
+## Notes on timestamps
+
+For deterministic behavior and cross-driver parity:
+
+- Drivers should use the provided now parameter for lease validation and scheduling decisions.
+- Backends like Postgres store TIMESTAMPTZ at microsecond precision, so tests should compare times at microsecond precision.

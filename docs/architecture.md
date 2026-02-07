@@ -1,70 +1,81 @@
 # TaskHarbor Architecture
 
-TaskHarbor is a background job framework for Go with pluggable drivers and a durable workflow layer.
+TaskHarbor is a background job framework for Go with pluggable drivers and an upcoming durable workflow layer.
 
-The key idea is separation:
-- Core defines the API and semantics (what a job system means).
-- Drivers implement storage and reservation (how jobs are stored and leased).
-- Workflows build on the same semantics (chain, group, chord).
+Core idea: separation of concerns
+
+- Core defines the API and semantics (what “correct job processing” means).
+- Drivers implement storage and reservation (how jobs are stored, leased, and transitioned).
+- Workflows build on the same semantics (Chain, Group, Chord), using durable state on Postgres.
 
 This keeps application code stable while allowing backend changes.
-
 
 ## Core components
 
 1. Client
+
 - Enqueues jobs with options (queue, run_at, max_attempts, timeout, idempotency_key).
 - Encodes payloads via a codec (default JSON).
 
 2. Worker
-- Registers handlers for job names.
+
+- Registers handlers for job types.
 - Reserves runnable jobs from a driver with a lease.
-- Executes handlers with timeouts and middleware.
-- Acks success or fails with retry/DLQ behavior.
+- Executes handlers with middleware, timeouts, and panic recovery.
+- On success: Ack.
+- On failure: Retry with backoff (or DLQ when max_attempts is exceeded / unrecoverable).
 
 3. Driver (backend)
-- Persists jobs and controls reservation/leases.
-- Provides atomic reservation so only one worker owns a job during a lease.
-- Supports acks, failures, retries, DLQ, and scheduling.
 
-4. Workflow engine
+- Persists jobs and enforces reservation/leases.
+- Provides state transitions that are safe under concurrency (reserve, extend lease, ack, retry, fail).
+- Drivers must not implement policy; core owns policy (retry logic, backoff, DLQ decision).
+
+4. Workflow layer (future milestones)
+
 - Provides builders (Chain, Group, Chord).
-- Stores workflow state durably (especially on Postgres).
+- Persists workflow state durably (especially on Postgres).
 - Drives progression by enqueueing jobs and reacting to completion events.
-
 
 ## Processing model
 
 - Delivery is at-least-once.
 - Leases prevent double processing during a valid lease.
 - If a worker crashes mid-job, the lease expires and the job becomes runnable again.
-- Users must write idempotent handlers (or use idempotency keys + external dedupe) for side-effecting work.
+- Handlers should be idempotent for side effects (emails, payments, writes).
 
+## Time and determinism
+
+TaskHarbor passes “now” down into driver operations (Reserve/Ack/Retry/Fail/ExtendLease). Drivers should use the provided time instead of calling time.Now internally.
+
+This is what makes:
+
+- tests deterministic (no sleeps),
+- behavior consistent across memory and Postgres,
+- lease validation unambiguous.
 
 ## Driver strategy (v0.1)
 
 Drivers shipped in v0.1:
-- memory: local dev + tests + reference semantics
-- postgres: production driver with durable state
 
-Future drivers are possible, but must pass conformance tests to ensure consistent semantics.
+- memory: local dev + reference semantics
+- postgres: durable production driver with migrations
 
+Future drivers must pass conformance tests to ensure consistent semantics.
 
-## Boundaries and extension points
+## Extension points
 
 - Codec: pluggable payload encoding/decoding (JSON default).
 - Middleware: wraps handler execution for logging, metrics, tracing, panic recovery, timeouts.
 - Retry policy: pluggable backoff; default exponential with jitter.
 - Observability: hooks/interfaces so core does not hard-depend on Prometheus or OpenTelemetry.
 
-
 ## Minimal public API shape (conceptual)
 
-- Open(driverConfig) -> Backend
-- Backend.Client() -> Client
-- Backend.Worker(opts) -> Worker
-- Worker.Handle(name, handler)
+- NewClient(driver) -> Client
+- NewWorker(driver, opts...) -> Worker
+- Worker.Register(type, handler)
 - Worker.Run(ctx)
-- Client.Enqueue(ctx, name, payload, opts)
+- Client.Enqueue(ctx, JobRequest)
 
-This is intentionally small and stable. Drivers should not leak into user code.
+Core is intentionally small and stable. Drivers should not leak policy into user code.
