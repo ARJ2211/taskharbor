@@ -93,7 +93,7 @@ Milestone 4: Leases + crash recovery (C)
 - Tests: reclaim works, no double processing during valid lease
 - Done when: crash simulation is safe.
 
-Milestone 5: Postgres driver v0
+Milestone 5: Postgres driver v0 (C)
 
 - Deliver: schema + migrations
 - Deliver: enqueue, schedule, reserve with lease, ack, fail, DLQ
