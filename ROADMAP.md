@@ -32,28 +32,88 @@ TaskHarbor is a stable Go API for background jobs plus a driver system underneat
 ## Target repo structure
 
 ```text
-.
-├── cmd/
-│   └── taskharbor/
-├── taskharbor/
+├── .github
+│   └── workflows
+│       └── go.yml
+├── cmd
+│   └── taskharbor
+├── conformance
+├── docker
+│   └── postgres-init
+│       └── 001_create_test_db.sql
+├── docs
+│   ├── architecture.md
+│   ├── driver-contract.md
+│   ├── postgres.md
+│   ├── retry-policy.md
+│   └── semantics.md
+├── examples
+│   ├── basic
+│   │   └── main.go
+│   ├── basic-postgres
+│   │   └── main.go
+│   └── stress-postgres
+│       └── main.go
+├── public
+│   └── data flow.png
+├── taskharbor
+│   ├── driver
+│   │   ├── memory
+│   │   │   ├── memory.go
+│   │   │   ├── memory_lease_test.go
+│   │   │   └── memory_test.go
+│   │   ├── postgres
+│   │   │   ├── migrations
+│   │   │   │   └── 001_init.sql
+│   │   │   ├── migrations.go
+│   │   │   ├── migrations_test.go
+│   │   │   ├── options.go
+│   │   │   ├── postgres.go
+│   │   │   ├── postgres_ack_test.go
+│   │   │   ├── postgres_e2e_test.go
+│   │   │   ├── postgres_enqueue_test.go
+│   │   │   ├── postgres_extend_lease_test.go
+│   │   │   ├── postgres_fail_test.go
+│   │   │   ├── postgres_reserve_test.go
+│   │   │   ├── postgres_retry_test.go
+│   │   │   └── queries.go
+│   │   └── driver.go
+│   ├── flow
+│   ├── internal
+│   │   └── envutil
+│   │       └── dotenv.go
 │   ├── client.go
-│   ├── worker.go
-│   ├── types.go
-│   ├── options.go
-│   ├── retry.go
-│   ├── middleware.go
+│   ├── client_test.go
+│   ├── clock.go
 │   ├── codec.go
-│   ├── errors.go
-│   ├── internal/
-│   ├── driver/
-│   │   ├── memory/
-│   │   └── postgres/
-│   └── flow/
-├── conformance/
-├── examples/
-├── docs/
-└── .github/
-    └── workflows/
+│   ├── codec_test.go
+│   ├── middleware.go
+│   ├── options.go
+│   ├── options_test.go
+│   ├── recover.go
+│   ├── retry.go
+│   ├── retry_test.go
+│   ├── timeout.go
+│   ├── types.go
+│   ├── unrecoverable.go
+│   ├── worker.go
+│   ├── worker_crash_recovery_test.go
+│   ├── worker_heartbeat_lease_test.go
+│   ├── worker_panic_test.go
+│   ├── worker_retry_test.go
+│   ├── worker_schedule_test.go
+│   ├── worker_test.go
+│   └── worker_timeout_test.go
+├── .env.example
+├── .gitignore
+├── CONTRIBUTING.md
+├── DATAFLOW.md
+├── LICENSE
+├── README.md
+├── ROADMAP.md
+├── docker-compose.yml
+├── go.mod
+└── go.sum
 ```
 
 ## Milestones (12 weeks)
