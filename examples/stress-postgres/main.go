@@ -97,6 +97,17 @@ func main() {
 
 	client := taskharbor.NewClient(d)
 
+	/*
+		// Optional: explicit retry policy.
+		rp := taskharbor.NewExponentialBackoffPolicy(
+			2*time.Second,
+			10*time.Second,
+			2.0,
+			0.0,
+			taskharbor.WithMaxAttempts(*maxAttempts),
+		)
+	*/
+
 	queues := make([]string, 0, *numQueues)
 	for i := 0; i < *numQueues; i++ {
 		queues = append(queues, fmt.Sprintf("q%d", i))
@@ -140,6 +151,7 @@ func main() {
 				taskharbor.WithConcurrency(*concurrency),
 				taskharbor.WithPollInterval(time.Duration(*pollMS)*time.Millisecond),
 				taskharbor.WithHeartbeatInterval(time.Duration(*hbMS)*time.Millisecond),
+				// taskharbor.WithRetryPolicy(rp),
 			)
 
 			if err := w.Register("stress:job", handler); err != nil {
