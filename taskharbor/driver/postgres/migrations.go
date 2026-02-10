@@ -55,7 +55,7 @@ func ApplyMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 
 	applied, err := loadAppliedMigrations(ctx, pool)
 	if err != nil {
-		return nil
+		return err
 	}
 
 	for _, m := range migs {

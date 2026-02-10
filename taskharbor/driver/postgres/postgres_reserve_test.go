@@ -91,7 +91,7 @@ func TestReserve_NoDoubleReserve_AndReclaim(t *testing.T) {
 		MaxAttempts: 3,
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 

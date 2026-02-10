@@ -51,7 +51,7 @@ func TestRetry_NotInflight(t *testing.T) {
 		MaxAttempts: 3,
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
@@ -106,7 +106,7 @@ func TestRetry_Success_ImmediateAndScheduled(t *testing.T) {
 		MaxAttempts: 3,
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 

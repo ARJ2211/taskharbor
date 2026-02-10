@@ -97,18 +97,6 @@ func main() {
 
 	client := taskharbor.NewClient(d)
 
-	/*
-		// Optional: explicit retry policy.
-
-		rp := taskharbor.NewExponentialBackoffPolicy(
-			2*time.Second,
-			10*time.Second,
-			2.0,
-			0.0,
-			taskharbor.WithMaxAttempts(*maxAttempts),
-		)
-	*/
-
 	queues := make([]string, 0, *numQueues)
 	for i := 0; i < *numQueues; i++ {
 		queues = append(queues, fmt.Sprintf("q%d", i))
@@ -152,7 +140,6 @@ func main() {
 				taskharbor.WithConcurrency(*concurrency),
 				taskharbor.WithPollInterval(time.Duration(*pollMS)*time.Millisecond),
 				taskharbor.WithHeartbeatInterval(time.Duration(*hbMS)*time.Millisecond),
-				// taskharbor.WithRetryPolicy(rp),
 			)
 
 			if err := w.Register("stress:job", handler); err != nil {
@@ -205,6 +192,10 @@ func main() {
 			runAt = time.Now().UTC().Add(time.Duration(rng.Intn(1500)) * time.Millisecond)
 		}
 
+		// IdempotencyKey: deterministic per logical job (scoped by queue on the DB side).
+		// If you rerun with the same seed and reset=false, duplicates will dedupe and return the original job id.
+		idemKey := fmt.Sprintf("stress:%d:%s:%d", *seed, q, i)
+
 		req := taskharbor.JobRequest{
 			Type: "stress:job",
 			Payload: StressPayload{
@@ -214,8 +205,9 @@ func main() {
 				WorkMS: work,
 				Body:   bodyStr,
 			},
-			Queue:       q,
-			MaxAttempts: *maxAttempts,
+			Queue:          q,
+			MaxAttempts:    *maxAttempts,
+			IdempotencyKey: idemKey,
 		}
 		if !runAt.IsZero() {
 			req.RunAt = runAt

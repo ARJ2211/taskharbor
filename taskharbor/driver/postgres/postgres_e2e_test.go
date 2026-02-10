@@ -60,7 +60,7 @@ func TestPostgresDriver_E2E_HappyPath(t *testing.T) {
 		MaxAttempts: 3,
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
@@ -115,7 +115,7 @@ func TestPostgresDriver_E2E_RetryScheduleThenAck(t *testing.T) {
 		MaxAttempts: 3,
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
@@ -218,7 +218,7 @@ func TestPostgresDriver_E2E_FailMovesToDLQ(t *testing.T) {
 		MaxAttempts: 3,
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
@@ -285,7 +285,7 @@ func TestPostgresDriver_E2E_RetryUntilMaxAttemptsThenDLQ(t *testing.T) {
 		MaxAttempts: 3, // after 3 failures we expect DLQ via Fail
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 

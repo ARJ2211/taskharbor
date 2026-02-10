@@ -42,6 +42,9 @@ INSERT INTO th_jobs (
 ) VALUES (
 	$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
 )
+ON CONFLICT (queue, idempotency_key)
+DO UPDATE SET id = th_jobs.id
+RETURNING id
 `
 
 /*

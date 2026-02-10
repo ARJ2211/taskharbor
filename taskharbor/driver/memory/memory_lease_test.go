@@ -22,7 +22,7 @@ func TestMemory_NoDoubleDeliverDuringValidLease(t *testing.T) {
 		CreatedAt: t0,
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("enqueue failed: %v", err)
 	}
 
@@ -85,7 +85,7 @@ func TestMemory_HeartbeatPreventsReclaim(t *testing.T) {
 		CreatedAt: t0,
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("enqueue failed: %v", err)
 	}
 

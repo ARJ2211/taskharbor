@@ -134,17 +134,15 @@ add a new job record into the jobs table and make the
 job runnable or schedule it for later depending on
 rec.RunAt
 */
-func (d *Driver) Enqueue(ctx context.Context, rec driver.JobRecord) error {
+func (d *Driver) Enqueue(ctx context.Context, rec driver.JobRecord) (string, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return "", false, err
 	}
-
 	if err := rec.Validate(); err != nil {
-		return err
+		return "", false, err
 	}
-
 	if err := d.ensureOpen(); err != nil {
-		return err
+		return "", false, err
 	}
 
 	d.mu.Lock()
@@ -153,10 +151,10 @@ func (d *Driver) Enqueue(ctx context.Context, rec driver.JobRecord) error {
 	d.mu.Unlock()
 
 	if closed {
-		return ErrDriverClosed
+		return "", false, ErrDriverClosed
 	}
 	if pool == nil {
-		return ErrNilPool
+		return "", false, ErrNilPool
 	}
 
 	var runAt any
@@ -174,13 +172,15 @@ func (d *Driver) Enqueue(ctx context.Context, rec driver.JobRecord) error {
 	}
 
 	var idemKey any
-	if strings.TrimSpace(rec.IdempotencyKey) == "" {
+	idemStr := strings.TrimSpace(rec.IdempotencyKey)
+	if idemStr == "" {
 		idemKey = nil
 	} else {
-		idemKey = rec.IdempotencyKey
+		idemKey = idemStr
 	}
 
-	_, err := pool.Exec(ctx, QEnqueue,
+	var storedID string
+	err := pool.QueryRow(ctx, QEnqueue,
 		rec.ID,
 		rec.Type,
 		rec.Queue,
@@ -194,12 +194,13 @@ func (d *Driver) Enqueue(ctx context.Context, rec driver.JobRecord) error {
 		failedAt,
 		"ready",
 		idemKey,
-	)
+	).Scan(&storedID)
 	if err != nil {
-		return err
+		return "", false, err
 	}
 
-	return nil
+	existed := (idemStr != "") && (storedID != rec.ID)
+	return storedID, existed, nil
 }
 
 /*
