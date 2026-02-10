@@ -84,17 +84,12 @@ func (r JobRecord) Validate() error {
 
 /*
 Driver is the backend contract.
-
-Milestone 2 contract:
-- Enqueue stores a job (runnable or scheduled via RunAt)
-- Reserve returns one runnable job (RunAt <= now) + a lease
-- Extend lease renews an existing lease for an inflight job
-- Ack marks the reserved job completed
-- Fail marks the reserved job failed and stores it into DLQ (driver-owned)
-- Reserve is non-blocking in v0 (ok=false means nothing runnable)
 */
 type Driver interface {
-	Enqueue(ctx context.Context, rec JobRecord) error
+	Enqueue(
+		ctx context.Context,
+		rec JobRecord,
+	) (stroredID string, existed bool, err error)
 	Reserve(
 		ctx context.Context,
 		queue string,
