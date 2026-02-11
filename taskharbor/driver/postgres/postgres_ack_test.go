@@ -210,9 +210,9 @@ func TestAck_Success_MarksDone(t *testing.T) {
 		t.Fatalf("expected ok=false after ack (done jobs not reservable)")
 	}
 
-	// acking again should behave like not inflight
-	err = d.Ack(ctx, id, lease.Token, t0.Add(2*time.Second))
-	if err != driver.ErrJobNotInflight {
-		t.Fatalf("expected ErrJobNotInflight on second ack, got %v", err)
+	// acking again should be idempotent (no-op success)
+	err = d.Ack(ctx, id, driver.LeaseToken("wrong-token"), t0.Add(2*time.Second))
+	if err != nil {
+		t.Fatalf("expected nil on second ack, got %v", err)
 	}
 }

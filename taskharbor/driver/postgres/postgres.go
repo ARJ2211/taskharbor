@@ -442,6 +442,10 @@ func (d *Driver) Ack(
 		return err2
 	}
 
+	if status == "done" {
+		return nil
+	}
+
 	if status != "inflight" || dbTok == nil || dbExp == nil {
 		return driver.ErrJobNotInflight
 	}
@@ -587,6 +591,10 @@ func (d *Driver) Fail(
 			return driver.ErrJobNotInflight
 		}
 		return err2
+	}
+
+	if status == "done" {
+		return nil
 	}
 
 	if status != "inflight" || dbTok == nil || dbExp == nil {
