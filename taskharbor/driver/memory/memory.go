@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ type Driver struct {
 	mu            sync.Mutex
 	queues        map[string]*queueState
 	inflightIndex map[string]string
+	idemIndex     map[string]string
 	closed        bool
 }
 
@@ -67,8 +69,17 @@ func New() *Driver {
 	var driver Driver = Driver{
 		queues:        make(map[string]*queueState),
 		inflightIndex: make(map[string]string),
+		idemIndex:     make(map[string]string),
 	}
 	return &driver
+}
+
+/*
+This function will create an idem key
+using queue + "\x00" + key
+*/
+func idemComposite(queue, key string) string {
+	return queue + "\x00" + key
 }
 
 /*
@@ -143,31 +154,46 @@ This function is responsible to enqueue a job into
 the queue. We need to check the RunAt attribute to
 add it to a scheduled heap or a basic FIFO queue.
 */
-func (d *Driver) Enqueue(ctx context.Context, rec driver.JobRecord) error {
+func (d *Driver) Enqueue(
+	ctx context.Context,
+	rec driver.JobRecord,
+) (storedID string, existed bool, err error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return "", false, err
 	}
 
 	if err := rec.Validate(); err != nil {
-		return err
+		return "", false, err
 	}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if d.closed {
-		return ErrDriverClosed
+		return "", false, ErrDriverClosed
+	}
+
+	// Dedupe: (queue, idempotency_key)
+	key := strings.TrimSpace(rec.IdempotencyKey)
+	if key != "" {
+		ck := idemComposite(rec.Queue, key)
+		if existingID, ok := d.idemIndex[ck]; ok {
+			// Duplicate enqueue: return original ID, do NOT enqueue again.
+			return existingID, true, nil
+		}
+		// First time seeing this key: lock it to this job ID forever
+		d.idemIndex[ck] = rec.ID
 	}
 
 	qs := d.getQueueLocked(rec.Queue)
 
 	if rec.RunAt.IsZero() {
 		qs.runnable = append(qs.runnable, rec)
-		return nil
+		return rec.ID, false, nil
 	}
 
 	heap.Push(&qs.scheduled, rec)
-	return nil
+	return rec.ID, false, nil
 }
 
 /*
