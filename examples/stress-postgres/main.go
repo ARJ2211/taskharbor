@@ -24,11 +24,13 @@ type StressPayload struct {
 	Mode   string // "ok", "flaky", "fail"
 	WorkMS int
 	Body   string
+	Depth  int  // 0 for original, 1 for child
+	Spawn  bool // if true, this job will enqueue a child on successful completion
 }
 
 var (
 	db          *pgxpool.Pool
-	flakySeen   sync.Map // key: jobID -> bool, used to fail only once
+	flakySeen   sync.Map // used to fail only once
 	okCount     int64
 	failCount   int64
 	flakyFailed int64
@@ -45,16 +47,17 @@ func main() {
 		pollMS         = flag.Int("poll-ms", 10, "worker poll interval (ms)")
 		hbMS           = flag.Int("heartbeat-ms", 50, "worker heartbeat interval (ms)")
 		maxAttempts    = flag.Int("max-attempts", 5, "job-level max attempts")
-		flakyPct       = flag.Int("flaky-pct", 30, "percent of jobs that fail once then succeed")
-		failPct        = flag.Int("fail-pct", 20, "percent of jobs that always fail (should DLQ)")
+		flakyPct       = flag.Int("flaky-pct", 40, "percent of jobs that fail once then succeed")
+		failPct        = flag.Int("fail-pct", 10, "percent of jobs that always fail (should DLQ)")
 		workMinMS      = flag.Int("work-min-ms", 1, "min simulated work per job (ms)")
 		workMaxMS      = flag.Int("work-max-ms", 15, "max simulated work per job (ms)")
 		bodyBytes      = flag.Int("body-bytes", 256, "payload body size in bytes")
-		maxConns       = flag.Int("max-conns", 50, "pgxpool max connections")
+		maxConns       = flag.Int("max-conns", 64, "pgxpool max connections")
 		reset          = flag.Bool("reset", true, "TRUNCATE th_jobs before starting")
 		printEveryMS   = flag.Int("print-ms", 1000, "print DB progress every N ms")
-		runTimeoutSecs = flag.Int("timeout-secs", 6000, "overall run timeout (seconds)")
+		runTimeoutSecs = flag.Int("timeout-secs", 60000, "overall run timeout (seconds)")
 		seed           = flag.Int64("seed", 42, "rng seed (repeatable runs)")
+		spawnEvery     = flag.Int("spawn-every", 50, "every Nth successful parent job enqueues 1 child")
 	)
 	flag.Parse()
 
@@ -97,17 +100,6 @@ func main() {
 
 	client := taskharbor.NewClient(d)
 
-	/*
-		// Optional: explicit retry policy.
-		rp := taskharbor.NewExponentialBackoffPolicy(
-			2*time.Second,
-			10*time.Second,
-			2.0,
-			0.0,
-			taskharbor.WithMaxAttempts(*maxAttempts),
-		)
-	*/
-
 	queues := make([]string, 0, *numQueues)
 	for i := 0; i < *numQueues; i++ {
 		queues = append(queues, fmt.Sprintf("q%d", i))
@@ -126,22 +118,52 @@ func main() {
 		case "fail":
 			atomic.AddInt64(&failCount, 1)
 			return errors.New("always-fail (should DLQ after max attempts)")
+
 		case "flaky":
 			// fail only once per job ID, then succeed on retry
 			if _, loaded := flakySeen.LoadOrStore(string(job.ID), true); !loaded {
 				atomic.AddInt64(&flakyFailed, 1)
 				return errors.New("flaky-fail-once (should retry then succeed)")
 			}
-			atomic.AddInt64(&okCount, 1)
-			return nil
+			// success path falls through to spawn + okCount increment
+
 		default:
-			atomic.AddInt64(&okCount, 1)
-			return nil
+			// ok path falls through to spawn + okCount increment
 		}
+
+		// Success path (ok OR flaky-after-first-fail)
+		if p.Spawn && p.Depth == 0 {
+			child := StressPayload{
+				JobNum: p.JobNum,
+				Queue:  p.Queue,
+				Mode:   "ok",
+				WorkMS: 1,
+				Body:   p.Body,
+				Depth:  1,
+				Spawn:  false,
+			}
+
+			childReq := taskharbor.JobRequest{
+				Type:           "stress:job",
+				Queue:          p.Queue,
+				Payload:        child,
+				MaxAttempts:    3, // keep child small
+				IdempotencyKey: fmt.Sprintf("child:%s:1", job.ID),
+				// idempotency key derived from parent job id
+			}
+
+			if _, err := client.Enqueue(ctx, childReq); err != nil {
+				// treat as handler failure so the parent retries until it can enqueue the child
+				return err
+			}
+		}
+
+		atomic.AddInt64(&okCount, 1)
+		return nil
 	}
 
 	var workerWG sync.WaitGroup
-	errCh := make(chan error, *numQueues**workersPerQ)
+	errCh := make(chan error, (*numQueues)*(*workersPerQ))
 
 	for _, q := range queues {
 		for i := 0; i < *workersPerQ; i++ {
@@ -151,7 +173,6 @@ func main() {
 				taskharbor.WithConcurrency(*concurrency),
 				taskharbor.WithPollInterval(time.Duration(*pollMS)*time.Millisecond),
 				taskharbor.WithHeartbeatInterval(time.Duration(*hbMS)*time.Millisecond),
-				// taskharbor.WithRetryPolicy(rp),
 			)
 
 			if err := w.Register("stress:job", handler); err != nil {
@@ -176,11 +197,13 @@ func main() {
 	}
 	bodyStr := string(body)
 
-	fmt.Printf("ENQUEUE: jobs=%d queues=%d workersPerQueue=%d concurrency=%d maxAttempts=%d\n",
-		*totalJobs, *numQueues, *workersPerQ, *concurrency, *maxAttempts,
+	fmt.Printf("ENQUEUE: jobs=%d queues=%d workersPerQueue=%d concurrency=%d maxAttempts=%d spawnEvery=%d\n",
+		*totalJobs, *numQueues, *workersPerQ, *concurrency, *maxAttempts, *spawnEvery,
 	)
 
 	start := time.Now()
+
+	var childJobsPlanned int64
 
 	for i := 0; i < *totalJobs; i++ {
 		q := queues[i%len(queues)]
@@ -198,14 +221,20 @@ func main() {
 			work = *workMinMS + rng.Intn(*workMaxMS-*workMinMS+1)
 		}
 
-		// Add some scheduled jobs so you also hit run_at gating.
+		// Add some scheduled jobs so you also hit run_at gating
 		var runAt time.Time
 		if i%10 == 0 {
 			runAt = time.Now().UTC().Add(time.Duration(rng.Intn(1500)) * time.Millisecond)
 		}
 
-		// IdempotencyKey: deterministic per logical job (scoped by queue on the DB side).
-		// If you rerun with the same seed and reset=false, duplicates will dedupe and return the original job id.
+		// Only successful jobs should spawn, so skip "fail" jobs
+		spawn := false
+		if *spawnEvery > 0 && (i%*spawnEvery == 0) && mode != "fail" {
+			spawn = true
+			childJobsPlanned++
+		}
+
+		// deterministic per logical job (scoped by queue on the DB side).
 		idemKey := fmt.Sprintf("stress:%d:%s:%d", *seed, q, i)
 
 		req := taskharbor.JobRequest{
@@ -216,6 +245,8 @@ func main() {
 				Mode:   mode,
 				WorkMS: work,
 				Body:   bodyStr,
+				Depth:  0,
+				Spawn:  spawn,
 			},
 			Queue:          q,
 			MaxAttempts:    *maxAttempts,
@@ -230,11 +261,13 @@ func main() {
 		}
 	}
 
-	fmt.Println("ENQUEUE: done")
+	fmt.Printf("ENQUEUE: done (planned children=%d totalTarget=%d)\n", childJobsPlanned, int64(*totalJobs)+childJobsPlanned)
 
-	// Progress printer + completion wait: done + dlq should reach totalJobs.
+	// Progress printer + completion wait: done + dlq should reach targetJobs
 	ticker := time.NewTicker(time.Duration(*printEveryMS) * time.Millisecond)
 	defer ticker.Stop()
+
+	targetJobs := int64(*totalJobs) + childJobsPlanned
 
 	var (
 		doneCnt     int64
@@ -265,38 +298,42 @@ func main() {
 
 			elapsed := time.Since(start).Seconds()
 			terminal := doneCnt + dlqCnt
-			rate := float64(terminal) / elapsed
+			rate := 0.0
+			if elapsed > 0 {
+				rate = float64(terminal) / elapsed
+			}
 
 			fmt.Printf("progress: done=%d dlq=%d ready=%d inflight=%d terminal=%d/%d rate=%.0f jobs/s handlerOK=%d handlerErr=%d flakyFirstFail=%d\n",
-				doneCnt, dlqCnt, readyCnt, inflightCnt, terminal, *totalJobs, rate,
+				doneCnt, dlqCnt, readyCnt, inflightCnt, terminal, targetJobs, rate,
 				atomic.LoadInt64(&okCount),
 				atomic.LoadInt64(&failCount),
 				atomic.LoadInt64(&flakyFailed),
 			)
 
-			if terminal >= int64(*totalJobs) {
+			if terminal >= targetJobs {
 				goto shutdown
 			}
 		}
 	}
 
 shutdown:
-	// Stop workers and wait for clean exit.
 	cancel()
 	workerWG.Wait()
 
 	totalDur := time.Since(start)
 	terminal := doneCnt + dlqCnt
-	var finalRate float64
+	finalRate := 0.0
 	if totalDur.Seconds() > 0 {
 		finalRate = float64(terminal) / totalDur.Seconds()
 	}
 
 	fmt.Println()
 	fmt.Println("SUMMARY")
-	fmt.Printf("duration=%s totalJobs=%d done=%d dlq=%d terminal=%d finalRate=%.0f jobs/s\n",
+	fmt.Printf("duration=%s initialJobs=%d plannedChildren=%d targetJobs=%d done=%d dlq=%d terminal=%d finalRate=%.0f jobs/s\n",
 		totalDur.Round(time.Millisecond),
 		*totalJobs,
+		childJobsPlanned,
+		targetJobs,
 		doneCnt,
 		dlqCnt,
 		terminal,
