@@ -33,3 +33,6 @@ go.work.sum
 
 # DS Store
 *.DS_Store
+
+# Stale branches / forks
+stale

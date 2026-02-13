@@ -42,7 +42,7 @@ func TestWorker_ProcessesEnqueuedJob(t *testing.T) {
 		CreatedAt: time.Now().UTC(),
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("enqueue failed: %v", err)
 	}
 
@@ -97,7 +97,7 @@ func TestWorker_GracefulShutdownWaitsForInflight(t *testing.T) {
 		CreatedAt: time.Now().UTC(),
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("enqueue failed: %v", err)
 	}
 

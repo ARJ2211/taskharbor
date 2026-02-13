@@ -62,7 +62,7 @@ func TestFail_NotInflight(t *testing.T) {
 		MaxAttempts: 3,
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
@@ -86,7 +86,7 @@ func TestFail_TokenMismatch(t *testing.T) {
 		MaxAttempts: 3,
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
@@ -117,7 +117,7 @@ func TestFail_ExpiredTakesPrecedenceOverMismatch(t *testing.T) {
 		MaxAttempts: 3,
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
@@ -149,7 +149,7 @@ func TestFail_SuccessMovesToDLQAndClearsLease(t *testing.T) {
 		MaxAttempts: 3,
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 

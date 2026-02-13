@@ -24,7 +24,7 @@ func TestMemory_EnqueueReserveAck(t *testing.T) {
 		CreatedAt: now,
 	}
 
-	err := d.Enqueue(ctx, rec)
+	_, _, err := d.Enqueue(ctx, rec)
 	if err != nil {
 		t.Fatalf("enqueue failed: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestMemory_SchedulePromotion(t *testing.T) {
 		CreatedAt: t0,
 	}
 
-	err := d.Enqueue(ctx, rec)
+	_, _, err := d.Enqueue(ctx, rec)
 	if err != nil {
 		t.Fatalf("enqueue failed: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestMemory_FailMovesToDLQ(t *testing.T) {
 		CreatedAt: now,
 	}
 
-	err := d.Enqueue(ctx, rec)
+	_, _, err := d.Enqueue(ctx, rec)
 	if err != nil {
 		t.Fatalf("enqueue failed: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestMemory_ReserveDoesNotDoubleDeliverInflight(t *testing.T) {
 		CreatedAt: now,
 	}
 
-	err := d.Enqueue(ctx, rec)
+	_, _, err := d.Enqueue(ctx, rec)
 	if err != nil {
 		t.Fatalf("enqueue failed: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestMemory_RetryMovesInflightBackToScheduled(t *testing.T) {
 		CreatedAt: t0,
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("enqueue failed: %v", err)
 	}
 
@@ -259,7 +259,7 @@ func TestMemory_AckRejectsLeaseMismatch(t *testing.T) {
 		CreatedAt: now,
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("enqueue failed: %v", err)
 	}
 
@@ -305,7 +305,7 @@ func TestMemory_ReclaimExpiredLeaseMakesJobRunnableAgain(t *testing.T) {
 		CreatedAt: t0,
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("enqueue failed: %v", err)
 	}
 
@@ -343,5 +343,50 @@ func TestMemory_ReclaimExpiredLeaseMakesJobRunnableAgain(t *testing.T) {
 
 	if err := d.Ack(ctx, rec.ID, lease2.Token, t0.Add(11*time.Second)); err != nil {
 		t.Fatalf("ack failed: %v", err)
+	}
+}
+
+func TestEnqueue_Idempotency_Dedupes(t *testing.T) {
+	d := New()
+	ctx := context.Background()
+
+	rec1 := driver.JobRecord{
+		ID:             "job1",
+		Type:           "t",
+		Queue:          "default",
+		Payload:        []byte(`{}`),
+		CreatedAt:      time.Now().UTC(),
+		MaxAttempts:    1,
+		IdempotencyKey: "k1",
+	}
+
+	id1, existed1, err := d.Enqueue(ctx, rec1)
+	if err != nil {
+		t.Fatalf("enqueue1: %v", err)
+	}
+	if existed1 {
+		t.Fatalf("expected existed=false on first enqueue")
+	}
+	if id1 != "job1" {
+		t.Fatalf("expected id job1, got %s", id1)
+	}
+
+	rec2 := rec1
+	rec2.ID = "job2"
+	rec2.Payload = []byte(`{"different":true}`)
+
+	id2, existed2, err := d.Enqueue(ctx, rec2)
+	if err != nil {
+		t.Fatalf("enqueue2: %v", err)
+	}
+	if !existed2 {
+		t.Fatalf("expected existed=true on duplicate enqueue")
+	}
+	if id2 != "job1" {
+		t.Fatalf("expected dedupe id job1, got %s", id2)
+	}
+
+	if got := d.RunnableSize("default"); got != 1 {
+		t.Fatalf("expected runnable size 1, got %d", got)
 	}
 }
