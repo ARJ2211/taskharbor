@@ -76,11 +76,12 @@ func (c *Client) Enqueue(ctx context.Context, req JobRequest) (JobId, error) {
 		Attempts:       0,
 	}
 
-	if err := c.driver.Enqueue(ctx, rec); err != nil {
+	storedID, _, err := c.driver.Enqueue(ctx, rec)
+	if err != nil {
 		return "", err
 	}
 
-	return id, nil
+	return JobId(storedID), nil
 }
 
 /*

@@ -150,9 +150,10 @@ func main() {
 			Subject: "RetryMe",
 			Body:    "Fails once to show attempts/run_at backoff",
 		},
-		Queue:       "default",
-		MaxAttempts: 5,
-		RunAt:       base.Add(3 * time.Second),
+		Queue:          "default",
+		MaxAttempts:    5,
+		RunAt:          base.Add(3 * time.Second),
+		IdempotencyKey: "k1",
 	})
 	if err != nil {
 		panic(err)

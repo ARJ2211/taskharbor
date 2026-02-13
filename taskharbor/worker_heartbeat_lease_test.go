@@ -19,7 +19,7 @@ type leaseFailDriver struct {
 	extendCalls int
 }
 
-func (d *leaseFailDriver) Enqueue(ctx context.Context, rec driver.JobRecord) error {
+func (d *leaseFailDriver) Enqueue(ctx context.Context, rec driver.JobRecord) (string, bool, error) {
 	return d.inner.Enqueue(ctx, rec)
 }
 
@@ -96,7 +96,7 @@ func TestWorker_HeartbeatCancelsHandlerOnLeaseLoss(t *testing.T) {
 		CreatedAt: time.Now().UTC(),
 	}
 
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("enqueue failed: %v", err)
 	}
 

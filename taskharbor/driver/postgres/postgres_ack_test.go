@@ -76,7 +76,7 @@ func TestAck_NotInflight(t *testing.T) {
 	id := fmt.Sprintf("ack_not_inflight_%d", time.Now().UnixNano())
 
 	rec := newJobRecord(id, t0)
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
@@ -100,7 +100,7 @@ func TestAck_TokenMismatch(t *testing.T) {
 	id := fmt.Sprintf("ack_mismatch_%d", time.Now().UnixNano())
 
 	rec := newJobRecord(id, t0)
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
@@ -140,7 +140,7 @@ func TestAck_Expired(t *testing.T) {
 	id := fmt.Sprintf("ack_expired_%d", time.Now().UnixNano())
 
 	rec := newJobRecord(id, t0)
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
@@ -170,7 +170,7 @@ func TestAck_Success_MarksDone(t *testing.T) {
 	id := fmt.Sprintf("ack_success_%d", time.Now().UnixNano())
 
 	rec := newJobRecord(id, t0)
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
@@ -210,9 +210,9 @@ func TestAck_Success_MarksDone(t *testing.T) {
 		t.Fatalf("expected ok=false after ack (done jobs not reservable)")
 	}
 
-	// acking again should behave like not inflight
-	err = d.Ack(ctx, id, lease.Token, t0.Add(2*time.Second))
-	if err != driver.ErrJobNotInflight {
-		t.Fatalf("expected ErrJobNotInflight on second ack, got %v", err)
+	// acking again should be idempotent (no-op success)
+	err = d.Ack(ctx, id, driver.LeaseToken("wrong-token"), t0.Add(2*time.Second))
+	if err != nil {
+		t.Fatalf("expected nil on second ack, got %v", err)
 	}
 }
