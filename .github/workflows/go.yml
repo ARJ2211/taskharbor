@@ -28,8 +28,19 @@ jobs:
           --health-timeout=3s
           --health-retries=20
 
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+
     env:
       TASKHARBOR_TEST_DSN: postgres://taskharbor:taskharbor@localhost:5432/taskharbor_test?sslmode=disable
+      REDIS_ADDR: localhost:6379
 
     steps:
       - uses: actions/checkout@v4
