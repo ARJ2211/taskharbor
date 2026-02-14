@@ -5,11 +5,16 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/ARJ2211/taskharbor/taskharbor/internal/envutil"
 )
 
 // skip if no REDIS_ADDR; else return driver + unique queue so tests don't clash
 func testRedis(t *testing.T) (*Driver, string) {
 	t.Helper()
+	wd, _ := os.Getwd()
+	_ = envutil.LoadRepoDotenv(wd)
+
 	addr := os.Getenv("REDIS_ADDR")
 	if addr == "" {
 		t.Skip("REDIS_ADDR not set, skipping Redis integration test")

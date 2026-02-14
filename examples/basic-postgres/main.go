@@ -1,17 +1,20 @@
+// basic example but using Redis instead of memory.
+// needs Redis running (e.g. docker-compose up -d redis).
+//
+// Env:
+//   REDIS_ADDR (default: localhost:6379)
+
 package main
 
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"sync/atomic"
 	"time"
 
 	"github.com/ARJ2211/taskharbor/taskharbor"
-	"github.com/ARJ2211/taskharbor/taskharbor/driver/postgres"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joho/godotenv"
+	"github.com/ARJ2211/taskharbor/taskharbor/driver/redis"
 )
 
 type EmailPayload struct {
@@ -20,41 +23,26 @@ type EmailPayload struct {
 	Body    string
 }
 
-// Demo-only: shared pool so the handler can read attempts from Postgres.
-// taskharbor.Job does not expose Attempts yet.
-var db *pgxpool.Pool
-
 // Demo-only: fail exactly once for "RetryMe" so you can see retry.
 // atomic makes it safe with concurrency > 1.
 var failOnce int32 = 1
 
 func main() {
-	_ = godotenv.Load()
-
-	dsn := os.Getenv("TASKHARBOR_DSN")
-	if dsn == "" {
-		log.Fatal("TASKHARBOR_DSN not set")
+	addr := os.Getenv("REDIS_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool, err := pgxpool.New(ctx, dsn)
+	d, err := redis.New(ctx, addr)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-	defer pool.Close()
-
-	if err := postgres.ApplyMigrations(ctx, pool); err != nil {
-		log.Fatal(err)
-	}
-
-	d, err := postgres.NewWithPool(pool)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	db = pool
+	defer func() {
+		_ = d.Close()
+	}()
 
 	client := taskharbor.NewClient(d)
 
@@ -66,7 +54,7 @@ func main() {
 		- different backoff timing (base/max/multiplier/jitter)
 		- a worker-wide cap that overrides large job MaxAttempts (global safety cap)
 
-		Uncomment to make retries very obvious in the DB (2s base delay):
+		Uncomment to make retries very obvious (2s base delay):
 
 		rp := taskharbor.NewExponentialBackoffPolicy(
 			2*time.Second,  // baseDelay
@@ -82,12 +70,12 @@ func main() {
 		taskharbor.WithDefaultQueue("default"),
 		taskharbor.WithConcurrency(2),
 		taskharbor.WithPollInterval(50*time.Millisecond),
-		taskharbor.WithHeartbeatInterval(50*time.Millisecond),
 		// taskharbor.WithRetryPolicy(rp),
 	)
 
-	errReg := worker.Register("email:send:postgres", func(ctx context.Context, job taskharbor.Job) error {
+	errReg := worker.Register("email:send:redis", func(ctx context.Context, job taskharbor.Job) error {
 		time.Sleep(1 * time.Second)
+
 		var p EmailPayload
 		err := taskharbor.JsonCodec{}.Unmarshal(job.Payload, &p)
 		if err != nil {
@@ -106,17 +94,18 @@ func main() {
 			return fmt.Errorf("intentional failure to trigger retry")
 		}
 
-		// Attempts aren't on taskharbor.Job yet, so read from Postgres for display.
-		var attempts int
-		_ = db.QueryRow(context.Background(), `SELECT attempts FROM th_jobs WHERE id=$1`, job.ID).Scan(&attempts)
+		// Always fail so it eventually goes to DLQ.
+		if p.Subject == "WillDLQ" {
+			fmt.Printf("HANDLER: always failing -> DLQ (id=%s)\n", job.ID)
+			return fmt.Errorf("always fail for DLQ demo")
+		}
 
 		fmt.Printf(
-			"HANDLER: sending email to=%s subject=%s body=%s (id=%s attempts=%d)\n",
+			"HANDLER: sending email to=%s subject=%s body=%s (id=%s)\n",
 			p.To,
 			p.Subject,
 			p.Body,
 			job.ID,
-			attempts,
 		)
 
 		return nil
@@ -129,14 +118,16 @@ func main() {
 
 	fmt.Println("ENQUEUE: immediate job")
 	_, err = client.Enqueue(ctx, taskharbor.JobRequest{
-		Type: "email:send:postgres",
+		Type: "email:send:redis",
 		Payload: EmailPayload{
-			To:      "aayush@example.com",
+			To:      "user@example.com",
 			Subject: "Hello",
 			Body:    "Immediate job",
 		},
 		Queue:       "default",
 		MaxAttempts: 5,
+		// Optional: idempotency key. (Milestone 6 behavior varies by driver.)
+		// IdempotencyKey: "k1",
 	})
 	if err != nil {
 		panic(err)
@@ -144,16 +135,15 @@ func main() {
 
 	fmt.Println("ENQUEUE: retry demo job (fails once, then succeeds)")
 	_, err = client.Enqueue(ctx, taskharbor.JobRequest{
-		Type: "email:send:postgres",
+		Type: "email:send:redis",
 		Payload: EmailPayload{
-			To:      "aayush@example.com",
+			To:      "user@example.com",
 			Subject: "RetryMe",
-			Body:    "Fails once to show attempts/run_at backoff",
+			Body:    "Fails once to show retry/backoff",
 		},
-		Queue:          "default",
-		MaxAttempts:    5,
-		RunAt:          base.Add(3 * time.Second),
-		IdempotencyKey: "k1",
+		Queue:       "default",
+		MaxAttempts: 5,
+		RunAt:       base.Add(3 * time.Second),
 	})
 	if err != nil {
 		panic(err)
@@ -161,9 +151,9 @@ func main() {
 
 	fmt.Println("ENQUEUE: scheduled job (2s later)")
 	_, err = client.Enqueue(ctx, taskharbor.JobRequest{
-		Type: "email:send:postgres",
+		Type: "email:send:redis",
 		Payload: EmailPayload{
-			To:      "aayush@example.com",
+			To:      "user@example.com",
 			Subject: "Scheduled",
 			Body:    "Scheduled job (2s)",
 		},
@@ -177,9 +167,9 @@ func main() {
 
 	fmt.Println("ENQUEUE: scheduled job (5s later)")
 	_, err = client.Enqueue(ctx, taskharbor.JobRequest{
-		Type: "email:send:postgres",
+		Type: "email:send:redis",
 		Payload: EmailPayload{
-			To:      "aayush@example.com",
+			To:      "user@example.com",
 			Subject: "Scheduled",
 			Body:    "Scheduled job (5s)",
 		},
@@ -193,15 +183,30 @@ func main() {
 
 	fmt.Println("ENQUEUE: scheduled job (8s later)")
 	_, err = client.Enqueue(ctx, taskharbor.JobRequest{
-		Type: "email:send:postgres",
+		Type: "email:send:redis",
 		Payload: EmailPayload{
-			To:      "aayush@example.com",
+			To:      "user@example.com",
 			Subject: "Scheduled",
 			Body:    "Scheduled job (8s)",
 		},
 		Queue:       "default",
 		RunAt:       base.Add(8 * time.Second),
 		MaxAttempts: 5,
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("ENQUEUE: job that will go to DLQ (always fails)")
+	_, err = client.Enqueue(ctx, taskharbor.JobRequest{
+		Type: "email:send:redis",
+		Payload: EmailPayload{
+			To:      "user@example.com",
+			Subject: "WillDLQ",
+			Body:    "Always fails -> DLQ",
+		},
+		Queue:       "default",
+		MaxAttempts: 2,
 	})
 	if err != nil {
 		panic(err)
@@ -226,6 +231,6 @@ func main() {
 
 	fmt.Println("DONE")
 
-	fmt.Println("TIP: watch DB state while this runs:")
-	fmt.Println(`watch -n 0.5 'psql --username=taskharbor --dbname=taskharbor -c "select id, type, status, attempts, run_at, last_error, dlq_reason from th_jobs order by created_at desc;"'`)
+	fmt.Println("TIP: watch Redis keys while this runs (prefix depends on driver options):")
+	fmt.Println(`redis-cli -h 127.0.0.1 -p 6379 --scan | head`)
 }
