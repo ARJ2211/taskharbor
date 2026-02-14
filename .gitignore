@@ -36,3 +36,5 @@ go.work.sum
 
 # Stale branches / forks
 stale
+
+# .gitignore
