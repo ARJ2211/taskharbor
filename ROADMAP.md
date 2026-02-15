@@ -160,7 +160,7 @@ Milestone 5: Postgres driver v0 (C)
 - Tests: integration tests using Postgres (local docker and CI)
 - Done when: same core demo works on Postgres.
 
-Milestone 6: Postgres hardening
+Milestone 6: Postgres hardening (C)
 
 - Deliver: idempotency keys via unique constraint behavior
 - Deliver: indexes for runnable queries + lease expiry
