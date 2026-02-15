@@ -1,5 +1,5 @@
 {
-  "version": "0.2.0",
+  "version": "0.2.1",
   "configurations": [
     {
       "name": "Debug basic-postgres example",
@@ -12,6 +12,36 @@
       "env": {
       },
       "args": []
+    },{
+      "name": "Debug basic-redis example",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/examples/basic-redis",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+      },
+      "args": []
+    },{
+      "name": "Debug stress test (postgres)",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/examples/stress",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "args": ["-driver", "postgres"]
+    },
+    {
+      "name": "Debug stress test (redis)",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/examples/stress",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "args": ["-driver", "redis"]
     }
   ]
 }
