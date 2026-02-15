@@ -75,7 +75,7 @@ func parseConfigOrExit() Config {
 	flag.BoolVar(&cfg.UseRetryPol, "retry-pol", true, "worker level retry policy")
 	flag.BoolVar(&cfg.Reset, "reset", true, "reset backend state before starting")
 
-	printMS := flag.Int("print-ms", 100, "print progress every N ms")
+	printMS := flag.Int("print-ms", 10, "print progress every N ms")
 	timeoutSecs := flag.Int("timeout-secs", 60000, "overall run timeout (seconds)")
 
 	flag.Int64Var(&cfg.Seed, "seed", 42, "rng seed (repeatable runs)")
