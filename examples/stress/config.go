@@ -31,6 +31,7 @@ type Config struct {
 	WorkMax   time.Duration
 	BodyBytes int
 
+	UseRetryPol  bool
 	Reset        bool
 	PrintEvery   time.Duration
 	RunTimeout   time.Duration
@@ -71,6 +72,7 @@ func parseConfigOrExit() Config {
 	workMaxMS := flag.Int("work-max-ms", 15, "max simulated work per job (ms)")
 	flag.IntVar(&cfg.BodyBytes, "body-bytes", 256, "payload body size in bytes")
 
+	flag.BoolVar(&cfg.UseRetryPol, "retry-pol", true, "worker level retry policy")
 	flag.BoolVar(&cfg.Reset, "reset", true, "reset backend state before starting")
 
 	printMS := flag.Int("print-ms", 1000, "print progress every N ms")
