@@ -62,6 +62,23 @@ type inflightItem struct {
 }
 
 /*
+Reset clears all in-memory state so the driver
+behaves like a fresh instance.
+This is mainly useful for stress tests and debugging.
+*/
+func (d *Driver) Reset() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// wipe everything
+	d.queues = make(map[string]*queueState)
+	d.inflightIndex = make(map[string]string)
+	d.idemIndex = make(map[string]string)
+	d.closed = false
+	return nil
+}
+
+/*
 ScheduledSize returns number of scheduled jobs for a queue.
 This is mainly useful for stress tests and debugging.
 */
