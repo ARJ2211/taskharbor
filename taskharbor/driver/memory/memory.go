@@ -62,6 +62,36 @@ type inflightItem struct {
 }
 
 /*
+ScheduledSize returns number of scheduled jobs for a queue.
+This is mainly useful for stress tests and debugging.
+*/
+func (d *Driver) ScheduledSize(queue string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	qs := d.queues[queue]
+	if qs == nil {
+		return 0
+	}
+	return qs.scheduled.Len()
+}
+
+/*
+DLQSize returns number of DLQ jobs for a queue.
+This is mainly useful for stress tests and debugging.
+*/
+func (d *Driver) DLQSize(queue string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	qs := d.queues[queue]
+	if qs == nil {
+		return 0
+	}
+	return len(qs.dlq)
+}
+
+/*
 This allows the client to make a new driver
 for the in-memory datastore.
 */
