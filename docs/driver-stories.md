@@ -1,0 +1,13 @@
+# Driver stories
+
+These are the primary drivers planned after the first release. The goal is to support the most common infrastructure choices teams already have, while keeping TaskHarbor's semantics consistent via the conformance suite.
+
+| Driver         | User story (why someone wants it)                                                                                                   | Tradeoffs                                                                                                       |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Postgres       | I already run Postgres and want background jobs without adding new infra. Best for business-critical jobs where durability matters. | Can add DB load; needs good indexes/cleanup. Not as fast as in-memory brokers for tiny jobs.                    |
+| Redis          | I need very fast dispatch for lots of short jobs and I already have Redis. Great for fanout, notifications, cache work.             | Extra infra to run/tune. Durability depends on config. Memory pressure is real.                                 |
+| AWS SQS        | I’m on AWS and want a managed queue that scales and absorbs spikes with minimal ops.                                                | Semantics are service-defined; local dev can be annoying. Workflows/scheduling often need extra state storage.  |
+| Kafka          | My “tasks” are really events. I want replay, retention, and many consumers across systems.                                          | Heavier ops than a queue. Higher latency for small jobs. Often needs extra state to match strict job semantics. |
+| RabbitMQ       | I need routing patterns (topics/keys) and enterprise broker workflows.                                                              | Must operate the broker and manage topology. Some durable workflow features need extra storage.                 |
+| GCP Pub/Sub    | I’m GCP-native and want managed messaging for event-driven services with low ops.                                                   | Ordering/semantics constraints. Local dev parity is weaker. Workflows usually need extra state storage.         |
+| NATS JetStream | I want lightweight, Kubernetes-friendly messaging with persistence, not as heavy as Kafka.                                          | Still another system to operate. Some advanced semantics may need extra state storage.                          |
