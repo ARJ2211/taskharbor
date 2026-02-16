@@ -24,11 +24,14 @@ package taskharbor
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ARJ2211/taskharbor/taskharbor/driver"
@@ -44,6 +47,25 @@ type Worker struct {
 	mu       sync.RWMutex
 	handlers map[string]Handler
 	queue    string
+
+	// Telemetry to show current
+	// concurrent jobs in worker.
+	id     string
+	active int64
+}
+
+func (w *Worker) ID() string {
+	return w.id
+}
+
+func (w *Worker) Active() int64 {
+	return atomic.LoadInt64(&w.active)
+}
+
+func newWorkerID() string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 /*
@@ -57,6 +79,7 @@ func NewWorker(d driver.Driver, opts ...Option) *Worker {
 		cfg:      cfg,
 		handlers: make(map[string]Handler),
 		queue:    cfg.DefaultQueue,
+		id:       newWorkerID(),
 	}
 	return &worker
 }
@@ -145,7 +168,7 @@ func (w *Worker) Run(ctx context.Context) error {
 			defer func() { <-sem }()
 
 			drvCtx := context.WithoutCancel(ctx)
-			jobCtx, cancelJob := context.WithCancel(ctx)
+			jobCtx, cancelJob := context.WithCancel(drvCtx)
 			defer cancelJob()
 
 			var leaseMu sync.Mutex
@@ -220,7 +243,7 @@ func (w *Worker) Run(ctx context.Context) error {
 				CreatedAt: r.CreatedAt,
 			}
 
-			// Belt-and-suspenders panic safety: middleware should catch panics,
+			// middleware should catch panics,
 			// but this ensures a panic never kills the worker goroutine.
 			err := func() (err error) {
 				defer func() {
@@ -228,6 +251,8 @@ func (w *Worker) Run(ctx context.Context) error {
 						err = PanicError{Value: v, Stack: debug.Stack()}
 					}
 				}()
+				atomic.AddInt64(&w.active, 1)
+				defer atomic.AddInt64(&w.active, -1)
 				return h(jobCtx, job)
 			}()
 
