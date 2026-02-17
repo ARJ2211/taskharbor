@@ -1,14 +1,19 @@
 package conformance
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ARJ2211/taskharbor/taskharbor/driver"
 )
 
 var queueSeq uint64
+var jobSeq uint64
 
 /*
 Helper function to create a unique queue name
@@ -26,6 +31,61 @@ func uniqueQueueName(t *testing.T) string {
 	}
 
 	return "q_" + base
+}
+
+/*
+Helper function to create a unique JobID
+*/
+func uniqueJobID(t *testing.T) string {
+	t.Helper()
+
+	n := atomic.AddUint64(&jobSeq, 1)
+	base := fmt.Sprintf("%s_%d", t.Name(), n)
+
+	re := regexp.MustCompile(`[^a-zA-Z0-9_]+`) // Keep it backend friendly
+	base = re.ReplaceAllString(base, "_")
+	if len(base) > 48 {
+		base = base[:48]
+	}
+
+	return "job_" + base
+
+}
+
+func fixedNow() time.Time {
+	// stable, UTC, already microsecond-aligned
+	return time.Date(2030, 1, 2, 3, 4, 5, 123456000, time.UTC)
+}
+
+/*
+Helper function to create and return a JobRecord
+(Driver content after getting a job request)
+Remaining params can be defaulted here ...
+*/
+func newRecord(
+	t *testing.T,
+	queue string,
+	runAt time.Time,
+	createdAt time.Time,
+) driver.JobRecord {
+	t.Helper()
+
+	rec := driver.JobRecord{
+		ID:             uniqueJobID(t),
+		Type:           "test",
+		Payload:        []byte("{x:1}"),
+		Queue:          queue,
+		RunAt:          runAt,
+		Timeout:        0,
+		IdempotencyKey: "",
+		CreatedAt:      createdAt,
+		Attempts:       0,
+		MaxAttempts:    3, // Default for now
+		LastError:      "",
+		FailedAt:       time.Time{},
+	}
+
+	return rec
 }
 
 /*
@@ -55,4 +115,12 @@ func mustErrIs(t *testing.T, err error, target error, msg string) {
 	if err == nil {
 		t.Fatalf("%s: expected error %v, got nil", msg, target)
 	}
+	if !errors.Is(err, target) {
+		t.Fatalf("%s: expected error %v, got %v", msg, target, err)
+	}
 }
+
+/*
+Helper function to create a context to run the tests in
+*/
+func bg() context.Context { return context.Background() }

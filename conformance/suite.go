@@ -1,6 +1,8 @@
 package conformance
 
-import "testing"
+import (
+	"testing"
+)
 
 /*
 This function runs the various conformance tests for
@@ -40,4 +42,12 @@ func Run(t *testing.T, f Factory, cases ...Case) {
 This is a convenience to keep driver wappers clean,
 comes later in #93
 */
-func All() []Case { return nil }
+func All() []Case {
+	out := make([]Case, 0, 8)
+
+	out = append(out, enqueueScheduleCases()...) // Need to add them here...
+	out = append(out, reserveLeaseCases()...)
+	out = append(out, extendLeaseCases()...)
+
+	return out
+}
