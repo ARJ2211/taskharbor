@@ -48,6 +48,9 @@ func All() []Case {
 	out = append(out, enqueueScheduleCases()...) // Need to add them here...
 	out = append(out, reserveLeaseCases()...)
 	out = append(out, extendLeaseCases()...)
+	out = append(out, ackCases()...)
+	out = append(out, retryFailDLQCases()...)
+	out = append(out, errorContractCases()...)
 
 	return out
 }
