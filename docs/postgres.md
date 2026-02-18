@@ -2,23 +2,61 @@
 
 This doc covers how to run TaskHarbor using the Postgres driver, including migrations, env vars, tests, examples, and useful psql queries for debugging and quick analytics.
 
-## What you get
+This driver stores jobs in Postgres and uses SQL queries to implement TaskHarbor semantics.
 
-Milestone 5
+## Schema overview
 
-- Durable job storage in Postgres
-- Scheduling via run_at
-- Leases (visibility timeouts) and crash recovery
-- ExtendLease heartbeat support
-- Ack / Retry / Fail (DLQ) with strict lease validation
-- Integration tests that mirror memory driver behavior
-- A runnable Postgres demo example (basic worker + scheduled jobs)
+The driver stores jobs in a single table (th_jobs) with columns for:
 
-Milestone 6
+- id (primary key)
+- queue
+- type
+- payload (bytea)
+- run_at (timestamp with time zone, nullable)
+- timeout (interval, nullable)
+- created_at
+- attempts
+- max_attempts
+- last_error
+- failed_at
+- status (ready, inflight, done, dlq)
+- lease_token (text, nullable)
+- lease_expires_at (timestamp with time zone, nullable)
+- idempotency_key (text, nullable)
 
-- Idempotency dedupe enforcement (unique constraint on (queue, idempotency_key))
-- Indexes for reserve and lease reclaim (partial indexes aligned with reserve query patterns)
-- Idempotent repeats for ack/fail once terminal (no-op success when already done/dlq)
+## Key points
+
+- run_at is NULL for runnable-now jobs (RunAt.IsZero in Go).
+- inflight jobs have (lease_token, lease_expires_at).
+- dlq and done are terminal states.
+- lease validation uses the provided now time, not database NOW().
+- when a lease is reclaimed (lease_expires_at <= now during Reserve), run_at is cleared (set back to NULL) so the job is treated as runnable now.
+
+## Reserve
+
+Reserve uses a single transaction to:
+
+- reclaim expired inflight jobs
+- promote due scheduled jobs (run_at <= now)
+- pick one runnable job (ready state)
+- set it inflight with a new lease token and expiry
+
+## Idempotency
+
+- When idempotency_key is provided, it is deduped per queue.
+- Duplicate enqueue for the same (queue, idempotency_key) returns the existing job id and existed=true.
+- Jobs without an idempotency key are not deduped.
+- Dedupe is based on (queue, idempotency_key) only. If a duplicate enqueue supplies a different payload/type/run_at, we still return the existing job and do not create a second runnable copy.
+
+## Terminal idempotency
+
+- Ack is idempotent once the job is done.
+- Fail is idempotent once the job is terminal (dlq or done).
+
+## Performance notes
+
+- Reserve is designed to be O(log n) with indexes on queue, status, and run_at.
+- Cleanup of terminal jobs (done/dlq) is not automatic; you can add retention policies externally.
 
 ## Environment variables
 
