@@ -40,7 +40,7 @@ func main() {
 		10*time.Second, // maxDelay
 		2.0,            // multiplier
 		0.0,            // jitterFrac
-		taskharbor.WithMaxAttempts(5),
+		taskharbor.WithMaxAttempts(cfg.MaxAttempts),
 	)
 
 	var workerWG sync.WaitGroup

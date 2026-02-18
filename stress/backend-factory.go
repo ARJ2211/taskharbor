@@ -29,9 +29,14 @@ func newBackend(ctx context.Context, cfg Config) (backend, error) {
 		return newPostgresBackend(ctx, cfg)
 	case "redis":
 		return newRedisBackend(ctx, cfg)
+	case "memory":
+		return newMemoryBackend(ctx, cfg)
 	default:
 		return backend{}, ErrInvalidDriver
 	}
 }
 
-var ErrInvalidDriver = errors.New("invalid driver")
+var (
+	ErrNotImplemented = errors.New("driver not implemented")
+	ErrInvalidDriver  = errors.New("invalid driver")
+)

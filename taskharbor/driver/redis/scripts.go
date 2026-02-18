@@ -3,11 +3,32 @@ package redis
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/ARJ2211/taskharbor/taskharbor/driver"
 	"github.com/redis/go-redis/v9"
 )
+
+// Scheduled ZSET representation (key fix for the conformance timing tests):
+//   - score  = runAt Unix seconds (fits safely in Redis ZSET double score)
+//   - member = "%09d:<jobID>" where %09d is nanoseconds within the second
+// This lets us do nanosecond-accurate due checks inside Lua for the current second.
+//
+// Why: the conformance tests check due-1ns vs due (often within the same millisecond).
+// Millisecond scores can't represent that boundary; nanosecond scores lose precision
+// because Redis ZSET scores are doubles.
+
+func schedMember(sub int64, id string) string {
+	if sub < 0 {
+		sub = 0
+	}
+	if sub > 999_999_999 {
+		sub = 999_999_999
+	}
+	return fmt.Sprintf("%09d:%s", sub, id)
+}
 
 // Lua returns numbers as int64 sometimes — normalize for the 0/1 checks
 func toInt64(v interface{}) (int64, bool) {
@@ -21,16 +42,50 @@ func toInt64(v interface{}) (int64, bool) {
 	}
 }
 
-// enqueue: atomically HSET job hash and RPUSH ready or ZADD scheduled (single script = atomic).
-// KEYS[1]=prefix, ARGV: id, queue, type, payload, run_at_nano, timeout_nano, created_at_nano, attempts, max_attempts, last_error, failed_at_nano, idempotency_key
+// enqueue: atomically HSET job hash and RPUSH ready or ZADD scheduled.
+// KEYS[1]=prefix
+// ARGV:
+//
+//	1  id
+//	2  queue
+//	3  type
+//	4  payload
+//	5  run_at_nano (string)
+//	6  timeout_nano
+//	7  created_at_nano
+//	8  attempts
+//	9  max_attempts
+//	10 last_error
+//	11 failed_at_nano
+//	12 idempotency_key
+//	13 run_at_sec (string)
+//	14 run_at_member ("%09d:<id>")
 const scriptEnqueue = `
 local prefix = KEYS[1]
 local id = ARGV[1]
 local queue = ARGV[2]
-local job_key = prefix .. ":job:" .. id
+
+local job_key   = prefix .. ":job:" .. id
 local ready_key = prefix .. ":queue:" .. queue .. ":ready"
 local sched_key = prefix .. ":queue:" .. queue .. ":scheduled"
+
+-- idempotency mapping
+local idem = ARGV[12]
+local idem_key = nil
+if idem ~= nil and idem ~= '' then
+  idem_key = prefix .. ":idem:" .. queue .. ":" .. idem
+  local existing = redis.call('GET', idem_key)
+  if existing and existing ~= false and existing ~= '' then
+    return {existing, 1}
+  end
+end
+
 local run_at_nano = ARGV[5]
+local status = "ready"
+if run_at_nano ~= '0' and run_at_nano ~= '' then
+  status = "scheduled"
+end
+
 redis.call('HSET', job_key,
   'type', ARGV[3],
   'queue', queue,
@@ -42,22 +97,52 @@ redis.call('HSET', job_key,
   'max_attempts', ARGV[9],
   'last_error', ARGV[10],
   'failed_at_nano', ARGV[11],
-  'idempotency_key', ARGV[12],
-  'status', 'ready',
+  'idempotency_key', idem,
+  'status', status,
   'lease_token', '',
   'lease_expires_at_nano', '0'
 )
-if run_at_nano == '0' or run_at_nano == '' then
+
+if status == 'ready' then
   redis.call('RPUSH', ready_key, id)
 else
-  redis.call('ZADD', sched_key, run_at_nano, id)
+  local run_at_sec = tonumber(ARGV[13])
+  local run_at_member = ARGV[14]
+  redis.call('ZADD', sched_key, run_at_sec, run_at_member)
 end
-return 1
+
+if idem_key ~= nil then
+  redis.call('SET', idem_key, id)
+end
+
+return {id, 0}
 `
 
-func (d *Driver) runEnqueueScript(ctx context.Context, rec *driver.JobRecord, runAtNano, createdAtNano, failedAtNano int64) error {
+func asString(v any) (string, bool) {
+	switch s := v.(type) {
+	case string:
+		return s, true
+	case []byte:
+		return string(s), true
+	default:
+		return "", false
+	}
+}
+
+func (d *Driver) runEnqueueScript(
+	ctx context.Context,
+	rec *driver.JobRecord,
+	runAtNano int64,
+	runAtSec int64,
+	runAtMember string,
+	createdAtNano int64,
+	failedAtNano int64,
+) (string, bool, error) {
 	keys := []string{d.opts.prefix}
-	args := []interface{}{
+
+	idem := strings.TrimSpace(rec.IdempotencyKey)
+
+	args := []any{
 		rec.ID,
 		rec.Queue,
 		rec.Type,
@@ -69,64 +154,147 @@ func (d *Driver) runEnqueueScript(ctx context.Context, rec *driver.JobRecord, ru
 		rec.MaxAttempts,
 		rec.LastError,
 		strconv.FormatInt(failedAtNano, 10),
-		rec.IdempotencyKey,
+		idem,
+		strconv.FormatInt(runAtSec, 10),
+		runAtMember,
 	}
-	_, err := d.client.Eval(ctx, scriptEnqueue, keys, args...).Result()
-	return err
+
+	res, err := d.client.Eval(ctx, scriptEnqueue, keys, args...).Result()
+	if err != nil {
+		return "", false, err
+	}
+
+	arr, ok := res.([]any)
+	if !ok || len(arr) != 2 {
+		return "", false, errors.New("enqueue script returned unexpected shape")
+	}
+
+	jobID, ok := asString(arr[0])
+	if !ok {
+		return "", false, errors.New("enqueue script returned non-string job id")
+	}
+
+	n, _ := toInt64(arr[1])
+	existed := n == 1
+
+	return jobID, existed, nil
 }
 
-// reserve: reclaim expired -> promote due scheduled -> LPOP one -> set lease + add to inflight. returns id or nil
+// reserve: reclaim expired -> promote due scheduled -> LPOP one -> set lease + add to inflight.
+// Scheduled promotion rules:
+//   - all items with score < now_sec are due
+//   - items with score == now_sec are due iff member nanos <= now_sub
 const scriptReserve = `
 local prefix = KEYS[1]
 local queue = ARGV[1]
-local now = tonumber(ARGV[2])
-local token = ARGV[3]
-local exp = tonumber(ARGV[4])
-local ready_key = prefix .. ":queue:" .. queue .. ":ready"
-local sched_key = prefix .. ":queue:" .. queue .. ":scheduled"
+
+local now_sec = tonumber(ARGV[2])
+local now_sub = tonumber(ARGV[3])
+local now_ms  = tonumber(ARGV[4])
+
+local token    = ARGV[5]
+local exp_ms   = tonumber(ARGV[6])
+local exp_nano = ARGV[7]
+
+local ready_key    = prefix .. ":queue:" .. queue .. ":ready"
+local sched_key    = prefix .. ":queue:" .. queue .. ":scheduled"
 local inflight_key = prefix .. ":queue:" .. queue .. ":inflight"
 
--- reclaim expired inflight -> put back on ready
-local expired = redis.call('ZRANGEBYSCORE', inflight_key, 0, now)
-for _, id in ipairs(expired) do
+local function member_to_id(m)
+  local colon = string.find(m, ':')
+  if colon then
+    return string.sub(m, colon + 1)
+  end
+  return m
+end
+
+local function promote(m)
+  redis.call('ZREM', sched_key, m)
+  local id = member_to_id(m)
   local job_key = prefix .. ":job:" .. id
   local status = redis.call('HGET', job_key, 'status')
-  if status == 'inflight' then
-    redis.call('ZREM', inflight_key, id)
-    redis.call('HSET', job_key, 'status', 'ready', 'run_at_nano', '0', 'lease_token', '', 'lease_expires_at_nano', '0')
+  if status == 'scheduled' then
+    redis.call('HSET', job_key, 'status', 'ready', 'run_at_nano', '0')
     redis.call('RPUSH', ready_key, id)
   end
 end
 
--- promote due scheduled -> ready
-local due = redis.call('ZRANGEBYSCORE', sched_key, 0, now)
-for _, id in ipairs(due) do
-  redis.call('ZREM', sched_key, id)
+-- reclaim expired inflight -> ready
+local expired = redis.call('ZRANGEBYSCORE', inflight_key, 0, now_ms)
+for _, id in ipairs(expired) do
   local job_key = prefix .. ":job:" .. id
-  redis.call('HSET', job_key, 'run_at_nano', '0')
-  redis.call('RPUSH', ready_key, id)
+  local status = redis.call('HGET', job_key, 'status')
+
+  redis.call('ZREM', inflight_key, id)
+
+  if status == 'inflight' then
+    redis.call('HSET', job_key,
+      'status', 'ready',
+      'run_at_nano', '0',
+      'lease_token', '',
+      'lease_expires_at_nano', '0'
+    )
+    redis.call('RPUSH', ready_key, id)
+  end
+end
+
+-- promote scheduled strictly before this second
+local prev_max = now_sec - 1
+if prev_max >= 0 then
+  local due_prev = redis.call('ZRANGEBYSCORE', sched_key, 0, prev_max)
+  for _, m in ipairs(due_prev) do
+    promote(m)
+  end
+end
+
+-- promote scheduled in this second up to now_sub
+local due_this = redis.call('ZRANGEBYSCORE', sched_key, now_sec, now_sec)
+for _, m in ipairs(due_this) do
+  local sub = tonumber(string.sub(m, 1, 9)) or 0
+  if sub <= now_sub then
+    promote(m)
+  end
 end
 
 -- pop one and lease it
 local id = redis.call('LPOP', ready_key)
-if id == false or id == nil then
+if not id then
   return nil
 end
 
 local job_key = prefix .. ":job:" .. id
-redis.call('HSET', job_key, 'status', 'inflight', 'lease_token', token, 'lease_expires_at_nano', ARGV[4])
-redis.call('ZADD', inflight_key, exp, id)
+redis.call('HSET', job_key,
+  'status', 'inflight',
+  'lease_token', token,
+  'lease_expires_at_nano', exp_nano,
+  'run_at_nano', '0'
+)
+redis.call('ZADD', inflight_key, exp_ms, id)
+
 return id
 `
 
-func (d *Driver) runReserveScript(ctx context.Context, queue string, nowNano int64, token string, expiresAtNano int64) (string, error) {
+func (d *Driver) runReserveScript(
+	ctx context.Context,
+	queue string,
+	nowSec int64,
+	nowSub int64,
+	nowMs int64,
+	token string,
+	expMs int64,
+	expNano int64,
+) (string, error) {
 	keys := []string{d.opts.prefix}
-	args := []interface{}{
+	args := []any{
 		queue,
-		strconv.FormatInt(nowNano, 10),
+		strconv.FormatInt(nowSec, 10),
+		strconv.FormatInt(nowSub, 10),
+		strconv.FormatInt(nowMs, 10),
 		token,
-		strconv.FormatInt(expiresAtNano, 10),
+		strconv.FormatInt(expMs, 10),
+		strconv.FormatInt(expNano, 10),
 	}
+
 	v, err := d.client.Eval(ctx, scriptReserve, keys, args...).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
@@ -152,9 +320,10 @@ const scriptExtendLease = `
 local job_key = KEYS[1]
 local token = ARGV[1]
 local now = tonumber(ARGV[2])
-local new_exp = tonumber(ARGV[3])
-local prefix = ARGV[4]
-local id = ARGV[5]
+local new_exp_nano = ARGV[3]
+local new_exp_ms = tonumber(ARGV[4])
+local prefix = ARGV[5]
+local id = ARGV[6]
 local status = redis.call('HGET', job_key, 'status')
 local db_tok = redis.call('HGET', job_key, 'lease_token')
 local db_exp = redis.call('HGET', job_key, 'lease_expires_at_nano')
@@ -167,23 +336,26 @@ end
 if tonumber(db_exp) <= now then
   return 0
 end
-redis.call('HSET', job_key, 'lease_expires_at_nano', tostring(new_exp))
+redis.call('HSET', job_key, 'lease_expires_at_nano', new_exp_nano)
 local queue = redis.call('HGET', job_key, 'queue')
 local inflight_key = prefix .. ":queue:" .. queue .. ":inflight"
-redis.call('ZADD', inflight_key, new_exp, id)
+redis.call('ZADD', inflight_key, new_exp_ms, id)
 return 1
 `
 
-func (d *Driver) runExtendLeaseScript(ctx context.Context, id, token string, nowNano int64, newExpiresAtNano int64) (bool, error) {
+func (d *Driver) runExtendLeaseScript(ctx context.Context, id, token string, nowNano int64, newExpiresAtNano int64, newExpiresAtMs int64) (bool, error) {
 	jobKey := d.keyJob(id)
 	keys := []string{jobKey}
-	args := []interface{}{
+
+	args := []any{
 		token,
 		strconv.FormatInt(nowNano, 10),
-		newExpiresAtNano,
+		strconv.FormatInt(newExpiresAtNano, 10),
+		strconv.FormatInt(newExpiresAtMs, 10),
 		d.opts.prefix,
 		id,
 	}
+
 	v, err := d.client.Eval(ctx, scriptExtendLease, keys, args...).Result()
 	if err != nil {
 		return false, err
@@ -192,8 +364,7 @@ func (d *Driver) runExtendLeaseScript(ctx context.Context, id, token string, now
 	return n == 1, nil
 }
 
-// ack: check inflight + token + not expired, then mark job done (status=done, clear lease) and ZREM from inflight.
-// We keep the job hash for inspect/done parity with postgres; we do not DEL.
+// ack: check inflight + token + not expired, then mark job done and ZREM from inflight.
 // Returns: 1 = success, 2 = not inflight, 3 = token mismatch, 4 = expired.
 const scriptAck = `
 local job_key = KEYS[1]
@@ -220,11 +391,10 @@ redis.call('ZREM', inflight_key, id)
 return 1
 `
 
-// runAckScript returns (1=success, 2=not inflight, 3=token mismatch, 4=expired), or error.
 func (d *Driver) runAckScript(ctx context.Context, id, token string, nowNano int64) (int64, error) {
 	jobKey := d.keyJob(id)
 	keys := []string{jobKey}
-	args := []interface{}{token, strconv.FormatInt(nowNano, 10), d.opts.prefix, id}
+	args := []any{token, strconv.FormatInt(nowNano, 10), d.opts.prefix, id}
 	v, err := d.client.Eval(ctx, scriptAck, keys, args...).Result()
 	if err != nil {
 		return 0, err
@@ -236,20 +406,25 @@ func (d *Driver) runAckScript(ctx context.Context, id, token string, nowNano int
 	return n, nil
 }
 
-// retry: back to ready/scheduled with new attempts/last_error, clear lease, ZREM from inflight
+// retry: back to ready/scheduled with new attempts/last_error, clear lease, ZREM inflight.
+// Scheduled entries use (run_at_sec, run_at_member).
 const scriptRetry = `
 local job_key = KEYS[1]
+
 local token = ARGV[1]
 local now = tonumber(ARGV[2])
-local run_at_nano = tonumber(ARGV[3])
+
+local run_at_nano = ARGV[3]
 local attempts = ARGV[4]
 local last_error = ARGV[5]
 local failed_at_nano = ARGV[6]
 local prefix = ARGV[7]
 local id = ARGV[8]
+
 local status = redis.call('HGET', job_key, 'status')
 local db_tok = redis.call('HGET', job_key, 'lease_token')
 local db_exp = redis.call('HGET', job_key, 'lease_expires_at_nano')
+
 if status ~= 'inflight' or db_tok == false or db_exp == false then
   return 0
 end
@@ -259,31 +434,64 @@ end
 if tonumber(db_exp) <= now then
   return 0
 end
+
 local queue = redis.call('HGET', job_key, 'queue')
-redis.call('HSET', job_key, 'status', 'ready', 'run_at_nano', tostring(run_at_nano), 'attempts', attempts, 'last_error', last_error, 'failed_at_nano', failed_at_nano, 'lease_token', '', 'lease_expires_at_nano', '0')
+
+local new_status = 'ready'
+if run_at_nano ~= '0' and run_at_nano ~= '' then
+  new_status = 'scheduled'
+end
+
+redis.call('HSET', job_key,
+  'status', new_status,
+  'run_at_nano', run_at_nano,
+  'attempts', attempts,
+  'last_error', last_error,
+  'failed_at_nano', failed_at_nano,
+  'lease_token', '',
+  'lease_expires_at_nano', '0'
+)
+
 redis.call('ZREM', prefix .. ":queue:" .. queue .. ":inflight", id)
+
 local ready_key = prefix .. ":queue:" .. queue .. ":ready"
 local sched_key = prefix .. ":queue:" .. queue .. ":scheduled"
-if run_at_nano == 0 then
+
+if new_status == 'ready' then
   redis.call('RPUSH', ready_key, id)
 else
-  redis.call('ZADD', sched_key, run_at_nano, id)
+  local run_at_sec = tonumber(ARGV[9])
+  local run_at_member = ARGV[10]
+  redis.call('ZADD', sched_key, run_at_sec, run_at_member)
 end
+
 return 1
 `
 
-func (d *Driver) runRetryScript(ctx context.Context, id, token string, nowNano, runAtNano int64, attempts int, lastError string, failedAtNano int64) (bool, error) {
+func (d *Driver) runRetryScript(
+	ctx context.Context,
+	id, token string,
+	nowNano int64,
+	runAtNano int64,
+	runAtSec int64,
+	runAtMember string,
+	attempts int,
+	lastError string,
+	failedAtNano int64,
+) (bool, error) {
 	jobKey := d.keyJob(id)
 	keys := []string{jobKey}
-	args := []interface{}{
+	args := []any{
 		token,
 		strconv.FormatInt(nowNano, 10),
-		runAtNano,
+		strconv.FormatInt(runAtNano, 10),
 		attempts,
 		lastError,
 		strconv.FormatInt(failedAtNano, 10),
 		d.opts.prefix,
 		id,
+		strconv.FormatInt(runAtSec, 10),
+		runAtMember,
 	}
 	v, err := d.client.Eval(ctx, scriptRetry, keys, args...).Result()
 	if err != nil {
@@ -324,7 +532,7 @@ return 1
 func (d *Driver) runFailScript(ctx context.Context, id, token string, nowNano int64, reason string, failedAtNano int64) (bool, error) {
 	jobKey := d.keyJob(id)
 	keys := []string{jobKey}
-	args := []interface{}{
+	args := []any{
 		token,
 		strconv.FormatInt(nowNano, 10),
 		reason,
@@ -339,3 +547,6 @@ func (d *Driver) runFailScript(ctx context.Context, id, token string, nowNano in
 	n, _ := toInt64(v)
 	return n == 1, nil
 }
+
+// Silence unused import warnings if you temporarily comment-out scripts during refactors.
+var _ = errors.New

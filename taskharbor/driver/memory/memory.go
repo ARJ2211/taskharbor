@@ -28,7 +28,11 @@ type Driver struct {
 	queues        map[string]*queueState
 	inflightIndex map[string]string
 	idemIndex     map[string]string
-	closed        bool
+
+	doneIndex map[string]struct{}
+	dlqIndex  map[string]string
+
+	closed bool
 }
 
 // Compile time check that we implement contract.
@@ -62,6 +66,53 @@ type inflightItem struct {
 }
 
 /*
+Reset clears all in-memory state so the driver
+behaves like a fresh instance.
+This is mainly useful for stress tests and debugging.
+*/
+func (d *Driver) Reset() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// wipe everything
+	d.queues = make(map[string]*queueState)
+	d.inflightIndex = make(map[string]string)
+	d.idemIndex = make(map[string]string)
+	d.closed = false
+	return nil
+}
+
+/*
+ScheduledSize returns number of scheduled jobs for a queue.
+This is mainly useful for stress tests and debugging.
+*/
+func (d *Driver) ScheduledSize(queue string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	qs := d.queues[queue]
+	if qs == nil {
+		return 0
+	}
+	return qs.scheduled.Len()
+}
+
+/*
+DLQSize returns number of DLQ jobs for a queue.
+This is mainly useful for stress tests and debugging.
+*/
+func (d *Driver) DLQSize(queue string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	qs := d.queues[queue]
+	if qs == nil {
+		return 0
+	}
+	return len(qs.dlq)
+}
+
+/*
 This allows the client to make a new driver
 for the in-memory datastore.
 */
@@ -70,6 +121,8 @@ func New() *Driver {
 		queues:        make(map[string]*queueState),
 		inflightIndex: make(map[string]string),
 		idemIndex:     make(map[string]string),
+		doneIndex:     make(map[string]struct{}),
+		dlqIndex:      make(map[string]string),
 	}
 	return &driver
 }
@@ -227,30 +280,34 @@ func (d *Driver) Reserve(
 	d.reclaimExpiredLeaseLocked(qs, now)
 	qs.promoteDueLocked(now)
 
-	if len(qs.runnable) == 0 {
-		return driver.JobRecord{}, driver.Lease{}, false, nil
+	for len(qs.runnable) > 0 {
+		rec := qs.runnable[0]
+		qs.runnable = qs.runnable[1:]
+
+		// Defensive: if a future-scheduled job ever slipped into runnable,
+		// push it back into scheduled and keep searching.
+		if !rec.RunAt.IsZero() && rec.RunAt.After(now) {
+			heap.Push(&qs.scheduled, rec)
+			continue
+		}
+
+		tok, err := newLeaseToken()
+		if err != nil {
+			return driver.JobRecord{}, driver.Lease{}, false, err
+		}
+
+		lease := driver.Lease{
+			Token:     tok,
+			ExpiresAt: now.Add(leaseFor),
+		}
+
+		qs.inflight[rec.ID] = inflightItem{rec: rec, lease: lease}
+		d.inflightIndex[rec.ID] = queue
+
+		return rec, lease, true, nil
 	}
 
-	rec := qs.runnable[0]
-	qs.runnable = qs.runnable[1:]
-
-	tok, err := newLeaseToken()
-	if err != nil {
-		return driver.JobRecord{}, driver.Lease{}, false, err
-	}
-
-	lease := driver.Lease{
-		Token:     tok,
-		ExpiresAt: now.Add(leaseFor),
-	}
-
-	qs.inflight[rec.ID] = inflightItem{
-		rec:   rec,
-		lease: lease,
-	}
-	d.inflightIndex[rec.ID] = queue
-
-	return rec, lease, true, nil
+	return driver.JobRecord{}, driver.Lease{}, false, nil
 }
 
 /*
@@ -328,6 +385,10 @@ func (d *Driver) Ack(
 		return ErrDriverClosed
 	}
 
+	if _, ok := d.doneIndex[id]; ok {
+		return nil
+	}
+
 	q, ok := d.inflightIndex[id]
 	if !ok {
 		return driver.ErrJobNotInflight
@@ -353,6 +414,8 @@ func (d *Driver) Ack(
 
 	delete(qs.inflight, id)
 	delete(d.inflightIndex, id)
+
+	d.doneIndex[id] = struct{}{}
 
 	return nil
 }
@@ -441,6 +504,13 @@ func (d *Driver) Fail(
 		return ErrDriverClosed
 	}
 
+	if _, ok := d.doneIndex[id]; ok {
+		return nil
+	}
+	if _, ok := d.dlqIndex[id]; ok {
+		return nil
+	}
+
 	q, ok := d.inflightIndex[id]
 	if !ok {
 		return driver.ErrJobNotInflight
@@ -468,6 +538,9 @@ func (d *Driver) Fail(
 		Reason:   reason,
 		FailedAt: now.UTC(),
 	}
+
+	d.dlqIndex[id] = q
+
 	return nil
 }
 

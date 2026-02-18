@@ -1,118 +1,88 @@
 # Driver Contract
 
-This document defines what a TaskHarbor driver must implement, and what the core runtime
-(client/worker) is responsible for.
+This is the stable contract between TaskHarbor core and any driver implementation.
 
-Principle
+Drivers may differ in storage and performance, but they must match behavior semantics.
 
-- Drivers provide storage + primitive state transitions.
-- Core provides semantics (retries, backoff, timeouts, panic recovery, leases).
-- Drivers should stay dumb so new backends can be contributed safely.
+## Core invariants
 
-## Job record
-
-At minimum, a driver persists these fields:
-
-- id (string)
-- type (string)
-- queue (string)
-- payload (bytes)
-- run_at (time): earliest time the job is eligible to run
-- timeout (duration)
-- attempts (int): number of recorded failures so far
-- max_attempts (int): maximum total executions allowed (0 means unset; core may default)
-- last_error (string)
-- failed_at (time)
-
-Drivers may store additional fields (created_at, idempotency_key, dlq_reason, etc).
-
-## States
-
-These are conceptual; drivers may store them however they want:
-
-- ready: runnable now (run_at is zero or <= now)
-- scheduled: run_at is in the future (often represented as ready + run_at > now)
-- inflight: reserved by a worker and protected by a lease
-- dlq: dead-lettered jobs (terminal)
-- done: successful jobs (terminal, optional; drivers may delete instead)
-
-If a driver uses done, Reserve must never return done jobs.
-
-## Leases
-
-A lease represents temporary ownership of an inflight job by a worker.
-
-- Reserve returns a lease token + expiry time.
-- While the lease is valid, no other worker should be able to reserve the same job.
-- A worker may extend a lease for long-running jobs via ExtendLease.
-- If a worker crashes (or never acks), the lease will expire and the job becomes reservable again.
-
-The driver is responsible for enforcing leases. Core uses them by heartbeating and by passing
-the lease token into Ack/Retry/Fail/ExtendLease.
+- At-least-once delivery.
+- Jobs are runnable when run_at is zero/NULL or run_at <= now.
+- Reserve is exclusive for the duration of a valid lease.
+- Expired leases are reclaimable and jobs become runnable again.
+- Ack marks a job successful (terminal).
+- Fail moves a job to DLQ (terminal).
+- Retry reschedules a job with updated attempts + error.
 
 ## Interface
 
-Enqueue(record)
+### Enqueue(record) (id string, existed bool, err error)
 
 - Store a job in ready or scheduled form depending on run_at.
 
-Reserve(queue, now, lease_for)
+Idempotency and existed semantics
 
-- Return one runnable job for a queue and move it to inflight.
-- Must return (ok=false, nil error) when nothing runnable.
-- Must never return a job that is already inflight with a valid lease.
-- Must return a lease (token + expiry).
-- lease_for must be > 0.
+- If record.IdempotencyKey is empty:
+    - The driver must always create a new job.
+    - Return (record.ID, false, nil) on success.
+
+- If record.IdempotencyKey is non-empty:
+    - The driver must dedupe by the tuple (record.Queue, record.IdempotencyKey).
+    - If a mapping already exists for that tuple, Enqueue must be a no-op and return:
+        - (existingJobID, true, nil).
+    - If no mapping exists, the driver must create the job and atomically create the mapping, then return:
+        - (record.ID, false, nil).
+
+Notes
+
+- Dedupe is queue-scoped: the same idempotency key may be reused in different queues.
+- Dedupe is based on (queue, idempotency_key) only. If a duplicate enqueue supplies different payload/type/run_at,
+  the driver still returns the existing job and must not create a second runnable copy.
+
+### Reserve(queue, now, lease_for)
+
+- Return ok=false when no runnable job exists.
 - Must reclaim expired inflight jobs (lazy reclaim during Reserve is acceptable).
 - Parity rule with memory driver: when reclaiming an expired inflight job, treat it as runnable now (run_at becomes zero/NULL).
 
-ExtendLease(id, token, now, lease_for)
+Reclaim semantics
 
-- Extend the existing lease for an inflight job.
-- Must validate token and that the current lease has not expired at now.
-- Must persist the new expiry.
-- May keep the same token or rotate it. If rotated, return the new token in the Lease.
+- When a lease has expired and the job is reclaimed:
+    - The job becomes runnable immediately.
+    - run_at must be cleared.
+    - lease token and lease expiry must be cleared.
 
-Ack(id, token, now)
+### Ack(id, token, now)
 
 - Mark an inflight job successful (terminal: done or delete).
 - Must validate token and expiry at now.
 - If token mismatches or lease expired, return a lease error and do not mutate state.
 
+Terminal idempotency
+
+- If the job is already in the terminal done state, Ack must return nil.
+
+### ExtendLease(id, token, now, lease_for)
+
+- Must validate token and not expired before extending.
+- Should return ErrLeaseMismatch / ErrLeaseExpired / ErrJobNotInflight accordingly.
+
 Retry(id, token, now, update)
 
-- Move an inflight job back to ready/scheduled.
-- Persist failure metadata (attempts, last_error, failed_at) and the new run_at.
-- Must validate token and expiry at now before mutating state.
-- Core decides when to retry and whether to DLQ. Drivers only persist.
+- Must validate token and not expired.
+- Must update attempts and last_error metadata.
+- If update.run_at is zero, job becomes runnable immediately.
+- If update.run_at is non-zero, job becomes scheduled for that time.
 
-Fail(id, token, now, reason)
+### Fail(id, token, now, reason)
 
 - Move an inflight job to DLQ (terminal).
 - Must validate token and expiry at now before mutating state.
 - Core decides when Fail should be used (max attempts exceeded or unrecoverable).
 
-Close()
+Terminal idempotency
 
-- Mark driver closed. Further operations should error.
-
-## Error expectations
-
-Drivers should return:
-
-- ErrJobNotInflight when Ack/Retry/Fail/ExtendLease is called on a job that is not inflight
-- ErrInvalidLeaseDuration when lease_for <= 0
-- ErrLeaseMismatch when token does not match the active lease token
-- ErrLeaseExpired when the lease is expired at the provided now time
-
-## Reclaiming expired leases
-
-Drivers must ensure expired inflight jobs become reservable again.
-
-Implementation strategies vary by backend:
-
-- memory driver can reclaim lazily during Reserve by scanning inflight and moving expired jobs back to ready
-- postgres driver can reclaim by treating expired inflight rows as runnable during Reserve (and writing a new lease token)
+- If the job is already terminal (dlq or done), Fail must return nil.
 
 ## Notes on timestamps
 
@@ -120,3 +90,34 @@ For deterministic behavior and cross-driver parity:
 
 - Drivers should use the provided now parameter for lease validation and scheduling decisions.
 - Backends like Postgres store TIMESTAMPTZ at microsecond precision, so tests should compare times at microsecond precision.
+
+Idempotency and the existed flag
+
+- If JobRecord.IdempotencyKey is non-empty, Enqueue MUST behave as a dedupe operation scoped to (queue, idempotency_key).
+- On the first enqueue for a given (queue, idempotency_key), the driver creates the job and returns (jobID, existed=false).
+- On a duplicate enqueue with the same (queue, idempotency_key), the driver MUST NOT create a second runnable copy. It returns (existingJobID, existed=true).
+- A duplicate enqueue MUST NOT mutate the existing job record (payload/type/run_at/etc.). It is strictly a lookup/dedupe.
+- If IdempotencyKey is empty, existed MUST be false.
+
+What this enables: callers can safely retry an enqueue request (network retry, client timeout, etc.) without risking duplicate runnable jobs.
+
+Terminal idempotency
+
+- Ack: once a job is marked done, subsequent Ack calls for that job MUST succeed (return nil), even though the job is no longer inflight.
+- Fail: once a job is moved to the DLQ (or is already done), subsequent Fail calls MUST succeed (return nil).
+- Retry: retrying a job that is already done or in the DLQ MUST return ErrJobNotInflight.
+
+## Error expectations
+
+Drivers should return:
+
+- ErrJobNotInflight when Ack/Retry/Fail/ExtendLease is called on a job that is not inflight
+- ErrLeaseMismatch when token does not match the active lease token
+- ErrLeaseExpired when the lease is expired at the provided now time
+
+Terminal idempotency exceptions
+
+- Ack on a done job returns nil.
+- Fail on a dlq or done job returns nil.
+
+Drivers must not silently succeed on invalid lease operations (wrong token or expired lease) unless the job is already terminal.
