@@ -168,7 +168,7 @@ Milestone 6: Postgres hardening (C)
 - Tests: dedupe, lease reclaim, concurrency reserve
 - Done when: correctness and basic performance are acceptable.
 
-Milestone 7: Conformance test suite
+Milestone 7: Conformance test suite (C)
 
 - Deliver: conformance package with reusable tests
 - Deliver: memory and Postgres drivers pass conformance
