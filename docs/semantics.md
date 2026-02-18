@@ -40,6 +40,7 @@ Rules:
 - While a lease is valid, no other worker should receive the job.
 - Workers may extend leases for long-running jobs via heartbeat (ExtendLease).
 - If a worker crashes or fails to ack, the lease expires and the job becomes runnable again.
+- When a lease is reclaimed, run_at is cleared so the job is runnable immediately.
 - Ack/Retry/Fail must provide the current lease token. If the token is stale or the lease is expired, the driver must reject the operation (no mutation).
 
 What this means in practice:
@@ -57,9 +58,17 @@ What this means in practice:
 ## Idempotency key
 
 - Enqueue may include idempotency_key.
-- If the same key is enqueued again, driver returns the existing job id and does not create a duplicate.
+- Dedupe scope is (queue, idempotency_key).
+- Enqueue returns (jobID, existed). If existed is true, the driver found an existing job for that (queue, idempotency_key) and did not create a second runnable copy.
+- A duplicate enqueue is a lookup/dedupe only. It does not mutate the existing job record.
 - Idempotency_key only dedupes enqueue, not execution side effects.
 - Use it to prevent duplicate job creation (double submits, retries at API layer).
+
+## Terminal idempotency
+
+- Ack is idempotent once a job is done: calling Ack again returns nil.
+- Fail is idempotent once a job is in the DLQ (or already done): calling Fail again returns nil.
+- Retry is not terminal-idempotent: retrying a done/DLQ job returns ErrJobNotInflight.
 
 ## Workflows (overview)
 

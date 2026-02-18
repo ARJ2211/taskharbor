@@ -17,6 +17,20 @@ import (
 // Redis driver for TaskHarbor. Jobs in hashes, queues use lists + sorted sets. Lua for atomic reserve/reclaim.
 var _ driver.Driver = (*Driver)(nil)
 
+func floorMsFromNano(nano int64) int64 {
+	if nano <= 0 {
+		return 0
+	}
+	return nano / 1_000_000
+}
+
+func ceilMsFromNano(nano int64) int64 {
+	if nano <= 0 {
+		return 0
+	}
+	return (nano + 999_999) / 1_000_000
+}
+
 type Driver struct {
 	mu        sync.Mutex
 	client    redis.UniversalClient
@@ -91,17 +105,7 @@ func (d *Driver) ensureOpen() error {
 
 // Per-queue we keep four structures: ready (list), scheduled (zset), inflight (zset), dlq (list).
 // key helpers — everything prefixed so you can share one Redis instance
-func (d *Driver) keyJob(id string) string      { return d.opts.prefix + ":job:" + id }
-func (d *Driver) keyReady(queue string) string { return d.opts.prefix + ":queue:" + queue + ":ready" }
-func (d *Driver) keyScheduled(queue string) string {
-	return d.opts.prefix + ":queue:" + queue + ":scheduled"
-}
-func (d *Driver) keyInflight(queue string) string {
-	return d.opts.prefix + ":queue:" + queue + ":inflight"
-}
-func (d *Driver) keyDlq(queue string) string {
-	return d.opts.prefix + ":queue:" + queue + ":dlq"
-}
+func (d *Driver) keyJob(id string) string { return d.opts.prefix + ":job:" + id }
 
 func newLeaseToken() (driver.LeaseToken, error) {
 	b := make([]byte, 16)
@@ -125,20 +129,27 @@ func (d *Driver) Enqueue(ctx context.Context, rec driver.JobRecord) (string, boo
 	}
 
 	runAtNano := int64(0)
+	runAtSec := int64(0)
+	runAtMember := ""
+
 	if !rec.RunAt.IsZero() {
-		runAtNano = rec.RunAt.UTC().UnixNano()
+		ru := rec.RunAt.UTC()
+		runAtNano = ru.UnixNano()
+		runAtSec = ru.Unix()
+		runAtMember = schedMember(int64(ru.Nanosecond()), rec.ID)
 	}
+
 	createdAtNano := rec.CreatedAt.UTC().UnixNano()
 	failedAtNano := int64(0)
 	if !rec.FailedAt.IsZero() {
 		failedAtNano = rec.FailedAt.UTC().UnixNano()
 	}
 
-	err := d.runEnqueueScript(ctx, &rec, runAtNano, createdAtNano, failedAtNano)
+	jobID, existed, err := d.runEnqueueScript(ctx, &rec, runAtNano, runAtSec, runAtMember, createdAtNano, failedAtNano)
 	if err != nil {
 		return "", false, err
 	}
-	return rec.ID, false, nil
+	return jobID, existed, nil
 }
 
 // Reserve: reclaim expired, promote due scheduled, pop one from ready, lease it. ok=false = nothing to do.
@@ -165,11 +176,18 @@ func (d *Driver) Reserve(
 	if err != nil {
 		return driver.JobRecord{}, driver.Lease{}, false, err
 	}
-	nowNano := now.UTC().UnixNano()
-	expiresAt := now.Add(leaseFor).UTC()
-	expiresAtNano := expiresAt.UnixNano()
 
-	id, err := d.runReserveScript(ctx, queue, nowNano, string(tok), expiresAtNano)
+	nowUTC := now.UTC()
+	nowSec := nowUTC.Unix()
+	nowSub := int64(nowUTC.Nanosecond())
+	nowMs := nowUTC.UnixMilli()
+
+	expiresAt := nowUTC.Add(leaseFor)
+	expNano := expiresAt.UnixNano()
+	expMs := ceilMsFromNano(expNano)
+
+	id, err := d.runReserveScript(ctx, queue, nowSec, nowSub, nowMs, string(tok), expMs, expNano)
+
 	if err != nil {
 		return driver.JobRecord{}, driver.Lease{}, false, err
 	}
@@ -254,11 +272,14 @@ func (d *Driver) ExtendLease(
 	if err := d.ensureOpen(); err != nil {
 		return driver.Lease{}, err
 	}
+
 	nowNano := now.UTC().UnixNano()
 	newExpiresAt := now.Add(leaseFor).UTC()
 	newExpiresAtNano := newExpiresAt.UnixNano()
+	newExpiresAtMs := floorMsFromNano(newExpiresAtNano)
 
-	updated, err := d.runExtendLeaseScript(ctx, id, string(token), nowNano, newExpiresAtNano)
+	updated, err := d.runExtendLeaseScript(ctx, id, string(token), nowNano, newExpiresAtNano, newExpiresAtMs)
+
 	if err != nil {
 		return driver.Lease{}, err
 	}
@@ -285,6 +306,10 @@ func (d *Driver) Ack(ctx context.Context, id string, token driver.LeaseToken, no
 	case 1:
 		return nil
 	case 2:
+		status, _ := d.client.HGet(ctx, d.keyJob(id), "status").Result()
+		if status == "done" {
+			return nil
+		}
 		return driver.ErrJobNotInflight
 	case 3:
 		return driver.ErrLeaseMismatch
@@ -308,23 +333,33 @@ func (d *Driver) Retry(
 	if err := d.ensureOpen(); err != nil {
 		return err
 	}
+
 	nowNano := now.UTC().UnixNano()
+
 	runAtNano := int64(0)
+	runAtSec := int64(0)
+	runAtMember := ""
+
 	if !upd.RunAt.IsZero() {
-		runAtNano = upd.RunAt.UTC().UnixNano()
+		ru := upd.RunAt.UTC()
+		runAtNano = ru.UnixNano()
+		runAtSec = ru.Unix()
+		runAtMember = schedMember(int64(ru.Nanosecond()), id)
 	}
+
 	failedAtNano := int64(0)
 	if !upd.FailedAt.IsZero() {
 		failedAtNano = upd.FailedAt.UTC().UnixNano()
 	}
 
-	ok, err := d.runRetryScript(ctx, id, string(token), nowNano, runAtNano, upd.Attempts, upd.LastError, failedAtNano)
+	ok, err := d.runRetryScript(ctx, id, string(token), nowNano, runAtNano, runAtSec, runAtMember, upd.Attempts, upd.LastError, failedAtNano)
 	if err != nil {
 		return err
 	}
 	if ok {
 		return nil
 	}
+
 	return d.classifyLeaseError(ctx, id, token, now)
 }
 
@@ -353,6 +388,11 @@ func (d *Driver) Fail(
 	if ok {
 		return nil
 	}
+	status, _ := d.client.HGet(ctx, d.keyJob(id), "status").Result()
+	if status == "dlq" || status == "done" {
+		return nil
+	}
+
 	return d.classifyLeaseError(ctx, id, token, now)
 }
 

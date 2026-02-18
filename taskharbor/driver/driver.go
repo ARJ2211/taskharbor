@@ -22,7 +22,7 @@ type JobRecord struct {
 	Payload        []byte        // Encoded payload bytes
 	Queue          string        // Queue name
 	RunAt          time.Time     // Scheduled time (0 means runnable now)
-	Timeout        time.Duration // Max allowed time for Job
+	Timeout        time.Duration // Max allowed time for Job (0 means no timeout)
 	IdempotencyKey string        // Allow idempotency during multiple calls (MILESTONE 6)
 	CreatedAt      time.Time     // Time when Job was created
 	Attempts       int           // Number of recorded failiures so far

@@ -102,7 +102,17 @@ func applyOptions(opts ...Option) Config {
 }
 
 /*
-This will overwrite the default codec
+This will overwrite the default codec (JsonCodec{}).
+
+The Codec is responsible for encoding a JobRequest.Payload (any) into bytes at enqueue-time,
+and decoding those bytes back into a Go value inside the handler.
+
+Use this when:
+- you want MessagePack / Protobuf / Gob instead of JSON
+- you want custom versioning / compression
+- you want deterministic encoding for hashing / idempotency
+
+If c is nil, applyOptions will reset it back to JsonCodec{}.
 */
 func WithCodec(c Codec) Option {
 	return func(cfg *Config) {
@@ -111,7 +121,16 @@ func WithCodec(c Codec) Option {
 }
 
 /*
-This option sets the concurrency for the worker.
+This will overwrite the default concurrency (4).
+
+Concurrency controls how many jobs the Worker can execute in parallel.
+Conceptually, it’s the number of worker goroutines that can be “in-flight” at once.
+
+Higher values:
+- increase throughput (more jobs at the same time)
+- increase CPU/memory usage and downstream load (DB, Redis, APIs)
+
+If n <= 0, applyOptions normalizes it to 1.
 */
 func WithConcurrency(n int) Option {
 	return func(cfg *Config) {
@@ -120,7 +139,20 @@ func WithConcurrency(n int) Option {
 }
 
 /*
-This option sets the polling interval for the worker.
+This will overwrite the default poll interval (200ms).
+
+PollInterval is how often the Worker asks the driver for available jobs when it has capacity.
+This matters most for drivers that don’t have a push mechanism and rely on polling.
+
+Smaller values:
+- lower latency to pick up jobs
+- more frequent driver calls (more Redis/DB load)
+
+Larger values:
+- less load on the backend
+- more “wait time” before a ready job gets picked up
+
+If d <= 0, applyOptions resets it to 200ms.
 */
 func WithPollInterval(d time.Duration) Option {
 	return func(cfg *Config) {
@@ -129,7 +161,12 @@ func WithPollInterval(d time.Duration) Option {
 }
 
 /*
-This option sets the default queue.
+This will overwrite the default queue name (DefaultQueue).
+
+DefaultQueue is used when a JobRequest does not specify Queue explicitly.
+It keeps “simple enqueue” ergonomics while still allowing multiple queues.
+
+If q == "", applyOptions resets it back to DefaultQueue.
 */
 func WithDefaultQueue(q string) Option {
 	return func(cfg *Config) {
@@ -138,7 +175,16 @@ func WithDefaultQueue(q string) Option {
 }
 
 /*
-This option sets the clock.
+This will overwrite the default clock (RealClock{}).
+
+Clock is the time source used by the Client/Worker when they need “now”.
+It exists mainly for testability and determinism.
+
+Use this when:
+- you want a fake/manual clock in tests (advance time without sleeping)
+- you want deterministic scheduling/backoff tests
+
+If c is nil, applyOptions resets it to RealClock{}.
 */
 func WithClock(c Clock) Option {
 	return func(cfg *Config) {
@@ -147,7 +193,17 @@ func WithClock(c Clock) Option {
 }
 
 /*
-This option sets the retry policy.
+This will overwrite the default retry policy (ExponentialBackoffPolicy ...).
+
+RetryPolicy decides how long to wait before retrying a failed job and
+(optionally) can impose a global max-attempts cap.
+
+This policy is used by the Worker/core when a handler returns an error:
+- it computes the next delay
+- the job is rescheduled accordingly
+
+Note: applyOptions does not currently “fix up” a nil RetryPolicy.
+So don’t pass nil here unless the rest of your code explicitly handles it.
 */
 func WithRetryPolicy(p RetryPolicy) Option {
 	return func(cfg *Config) {
@@ -165,7 +221,21 @@ func WithMiddleware(mw Middleware) Option {
 }
 
 /*
-This option sets the lease duration.
+This will overwrite the default lease duration (30s).
+
+LeaseDuration is the time window a worker “owns” a reserved job.
+If the worker crashes or doesn’t ack/extend in time, the lease expires and
+the job becomes reclaimable/reservable again.
+
+Bigger values:
+- safer for long-running jobs without frequent heartbeats
+- slower recovery if a worker dies (job waits longer before being reclaimed)
+
+Smaller values:
+- faster recovery from worker death
+- requires heartbeats/extends to avoid accidental reclaim
+
+If d <= 0, applyOptions resets it to 30s.
 */
 func WithLeaseDuration(d time.Duration) Option {
 	return func(cfg *Config) {
@@ -174,7 +244,18 @@ func WithLeaseDuration(d time.Duration) Option {
 }
 
 /*
-This option sets the heartbeat interval.
+This will overwrite the default heartbeat interval (computed in applyOptions).
+
+HeartbeatInterval controls how often the worker extends the lease while a job is running.
+It should be comfortably smaller than LeaseDuration so lease extensions happen in time.
+
+Defaults:
+- if not set (<= 0), applyOptions sets it to LeaseDuration/3
+- applyOptions also ensures it stays > 0 and < LeaseDuration
+
+Use this when:
+- jobs are very long-running and you want frequent extends
+- you want fewer extends to reduce backend chatter (while still staying safe)
 */
 func WithHeartbeatInterval(d time.Duration) Option {
 	return func(cfg *Config) {

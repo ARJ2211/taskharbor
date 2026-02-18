@@ -65,7 +65,7 @@ func parseConfigOrExit() Config {
 	hbMS := flag.Int("heartbeat-ms", 50, "worker heartbeat interval (ms)")
 
 	flag.IntVar(&cfg.MaxAttempts, "max-attempts", 5, "job-level max attempts")
-	flag.IntVar(&cfg.FlakyPct, "flaky-pct", 40, "percent of jobs that fail once then succeed")
+	flag.IntVar(&cfg.FlakyPct, "flaky-pct", 20, "percent of jobs that fail once then succeed")
 	flag.IntVar(&cfg.FailPct, "fail-pct", 10, "percent of jobs that always fail (should DLQ)")
 
 	workMinMS := flag.Int("work-min-ms", 1, "min simulated work per job (ms)")
@@ -80,13 +80,13 @@ func parseConfigOrExit() Config {
 
 	flag.Int64Var(&cfg.Seed, "seed", 42, "rng seed (repeatable runs)")
 	flag.IntVar(&cfg.SpawnEvery, "spawn-every", 50, "every Nth successful parent job enqueues 1 child")
-	flag.IntVar(&cfg.ScheduleRate, "schedule-every", 10, "every Nth job gets a run_at in near future")
+	flag.IntVar(&cfg.ScheduleRate, "schedule-every", 30, "every Nth job gets a run_at in near future")
 
 	flag.IntVar(&cfg.PostgresMaxConns, "pg-max-conns", 64, "pgxpool max connections (postgres)")
-	flag.IntVar(&cfg.RedisDB, "db", 0, "redis logical DB (0-15)")
-	flag.StringVar(&cfg.RedisPrefix, "prefix", "taskharbor", "redis key prefix")
-	flag.IntVar(&cfg.RedisPoolSize, "pool-size", 128, "redis pool size")
-	flag.StringVar(&cfg.RedisResetMode, "reset-mode", "scan", `redis reset: "scan" (delete prefix keys) or "flush" (FLUSHDB)`)
+	flag.IntVar(&cfg.RedisDB, "redis-db", 0, "redis logical DB (0-15)")
+	flag.StringVar(&cfg.RedisPrefix, "redis-prefix", "taskharbor", "redis key prefix")
+	flag.IntVar(&cfg.RedisPoolSize, "redis-pool-size", 128, "redis pool size")
+	flag.StringVar(&cfg.RedisResetMode, "redis-reset-mode", "scan", `redis reset: "scan" (delete prefix keys) or "flush" (FLUSHDB)`)
 
 	flag.Parse()
 
