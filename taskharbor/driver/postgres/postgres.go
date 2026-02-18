@@ -593,7 +593,7 @@ func (d *Driver) Fail(
 		return err2
 	}
 
-	if status == "done" {
+	if status == "done" || status == "dlq" {
 		return nil
 	}
 

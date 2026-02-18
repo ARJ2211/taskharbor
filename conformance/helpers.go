@@ -2,6 +2,8 @@ package conformance
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -13,7 +15,6 @@ import (
 )
 
 var queueSeq uint64
-var jobSeq uint64
 
 /*
 Helper function to create a unique queue name
@@ -38,18 +39,9 @@ Helper function to create a unique JobID
 */
 func uniqueJobID(t *testing.T) string {
 	t.Helper()
-
-	n := atomic.AddUint64(&jobSeq, 1)
-	base := fmt.Sprintf("%s_%d", t.Name(), n)
-
-	re := regexp.MustCompile(`[^a-zA-Z0-9_]+`) // Keep it backend friendly
-	base = re.ReplaceAllString(base, "_")
-	if len(base) > 48 {
-		base = base[:48]
-	}
-
-	return "job_" + base
-
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return "job_" + hex.EncodeToString(b)
 }
 
 func fixedNow() time.Time {

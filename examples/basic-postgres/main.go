@@ -63,12 +63,22 @@ func main() {
 	}
 
 	client := taskharbor.NewClient(d)
+
+	rp := taskharbor.NewExponentialBackoffPolicy(
+		2*time.Second,  // baseDelay
+		10*time.Second, // maxDelay
+		2.0,            // multiplier
+		0.2,            // jitterFrac
+		taskharbor.WithMaxAttempts(5),
+	)
+
 	worker := taskharbor.NewWorker(
 		d,
 		taskharbor.WithDefaultQueue("default"),
 		taskharbor.WithConcurrency(2),
 		taskharbor.WithPollInterval(50*time.Millisecond),
 		taskharbor.WithHeartbeatInterval(20*time.Millisecond),
+		taskharbor.WithRetryPolicy(rp),
 	)
 
 	errReg := worker.Register("email:send:postgres", runJob)

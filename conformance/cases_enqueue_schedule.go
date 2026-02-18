@@ -69,20 +69,26 @@ func enqueueScheduleCases() []Case {
 				q := uniqueQueueName(t)
 				now := fixedNow()
 				due := now.Add(2 * time.Second)
+				before := due.Add(-1 * time.Nanosecond)
 				leaseFor := 10 * time.Second
 
-				rec := newRecord(t, q, time.Time{}, now)
+				// IMPORTANT: this must be scheduled (RunAt = due)
+				rec := newRecord(t, q, due, now)
+
 				_, existed, err := d.Enqueue(bg(), rec)
+				mustNoErr(t, err, "enqueue scheduled job")
 				if existed {
 					t.Fatalf("enqueue scheduled job: expected existed=false")
 				}
 
-				_, _, ok, err := d.Reserve(bg(), q, due, leaseFor)
+				// Before due: not reservable
+				_, _, ok, err := d.Reserve(bg(), q, before, leaseFor)
 				mustNoErr(t, err, "reserve before due")
 				if ok {
 					t.Fatalf("reserve before due: expected ok=false")
 				}
 
+				// At/after due: reservable
 				got, lease, ok, err := d.Reserve(bg(), q, due, leaseFor)
 				mustNoErr(t, err, "reserve at/after due")
 				if !ok {
@@ -92,12 +98,7 @@ func enqueueScheduleCases() []Case {
 					t.Fatalf("reserve at/after due: expected id=%s, got %s", rec.ID, got.ID)
 				}
 
-				ackNow := due.Add(1 * time.Second)
-				mustNoErr(
-					t, d.Ack(bg(),
-						got.ID, lease.Token,
-						ackNow), "ack scheduled job",
-				)
+				mustNoErr(t, d.Ack(bg(), got.ID, lease.Token, due.Add(1*time.Second)), "ack scheduled job")
 			},
 		},
 		{
