@@ -69,6 +69,17 @@ local job_key   = prefix .. ":job:" .. id
 local ready_key = prefix .. ":queue:" .. queue .. ":ready"
 local sched_key = prefix .. ":queue:" .. queue .. ":scheduled"
 
+-- idempotency mapping
+local idem = ARGV[12]
+local idem_key = nil
+if idem ~= nil and idem ~= '' then
+  idem_key = prefix .. ":idem:" .. queue .. ":" .. idem
+  local existing = redis.call('GET', idem_key)
+  if existing and existing ~= false and existing ~= '' then
+    return {existing, 1}
+  end
+end
+
 local run_at_nano = ARGV[5]
 local status = "ready"
 if run_at_nano ~= '0' and run_at_nano ~= '' then
@@ -86,7 +97,7 @@ redis.call('HSET', job_key,
   'max_attempts', ARGV[9],
   'last_error', ARGV[10],
   'failed_at_nano', ARGV[11],
-  'idempotency_key', ARGV[12],
+  'idempotency_key', idem,
   'status', status,
   'lease_token', '',
   'lease_expires_at_nano', '0'
@@ -100,8 +111,23 @@ else
   redis.call('ZADD', sched_key, run_at_sec, run_at_member)
 end
 
-return 1
+if idem_key ~= nil then
+  redis.call('SET', idem_key, id)
+end
+
+return {id, 0}
 `
+
+func asString(v any) (string, bool) {
+	switch s := v.(type) {
+	case string:
+		return s, true
+	case []byte:
+		return string(s), true
+	default:
+		return "", false
+	}
+}
 
 func (d *Driver) runEnqueueScript(
 	ctx context.Context,
@@ -111,8 +137,10 @@ func (d *Driver) runEnqueueScript(
 	runAtMember string,
 	createdAtNano int64,
 	failedAtNano int64,
-) error {
+) (string, bool, error) {
 	keys := []string{d.opts.prefix}
+
+	idem := strings.TrimSpace(rec.IdempotencyKey)
 
 	args := []any{
 		rec.ID,
@@ -126,13 +154,30 @@ func (d *Driver) runEnqueueScript(
 		rec.MaxAttempts,
 		rec.LastError,
 		strconv.FormatInt(failedAtNano, 10),
-		strings.TrimSpace(rec.IdempotencyKey),
+		idem,
 		strconv.FormatInt(runAtSec, 10),
 		runAtMember,
 	}
 
-	_, err := d.client.Eval(ctx, scriptEnqueue, keys, args...).Result()
-	return err
+	res, err := d.client.Eval(ctx, scriptEnqueue, keys, args...).Result()
+	if err != nil {
+		return "", false, err
+	}
+
+	arr, ok := res.([]any)
+	if !ok || len(arr) != 2 {
+		return "", false, errors.New("enqueue script returned unexpected shape")
+	}
+
+	jobID, ok := asString(arr[0])
+	if !ok {
+		return "", false, errors.New("enqueue script returned non-string job id")
+	}
+
+	n, _ := toInt64(arr[1])
+	existed := n == 1
+
+	return jobID, existed, nil
 }
 
 // reserve: reclaim expired -> promote due scheduled -> LPOP one -> set lease + add to inflight.

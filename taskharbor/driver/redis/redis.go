@@ -145,12 +145,11 @@ func (d *Driver) Enqueue(ctx context.Context, rec driver.JobRecord) (string, boo
 		failedAtNano = rec.FailedAt.UTC().UnixNano()
 	}
 
-	err := d.runEnqueueScript(ctx, &rec, runAtNano, runAtSec, runAtMember, createdAtNano, failedAtNano)
-
+	jobID, existed, err := d.runEnqueueScript(ctx, &rec, runAtNano, runAtSec, runAtMember, createdAtNano, failedAtNano)
 	if err != nil {
 		return "", false, err
 	}
-	return rec.ID, false, nil
+	return jobID, existed, nil
 }
 
 // Reserve: reclaim expired, promote due scheduled, pop one from ready, lease it. ok=false = nothing to do.
