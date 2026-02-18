@@ -62,6 +62,53 @@ type inflightItem struct {
 }
 
 /*
+Reset clears all in-memory state so the driver
+behaves like a fresh instance.
+This is mainly useful for stress tests and debugging.
+*/
+func (d *Driver) Reset() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// wipe everything
+	d.queues = make(map[string]*queueState)
+	d.inflightIndex = make(map[string]string)
+	d.idemIndex = make(map[string]string)
+	d.closed = false
+	return nil
+}
+
+/*
+ScheduledSize returns number of scheduled jobs for a queue.
+This is mainly useful for stress tests and debugging.
+*/
+func (d *Driver) ScheduledSize(queue string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	qs := d.queues[queue]
+	if qs == nil {
+		return 0
+	}
+	return qs.scheduled.Len()
+}
+
+/*
+DLQSize returns number of DLQ jobs for a queue.
+This is mainly useful for stress tests and debugging.
+*/
+func (d *Driver) DLQSize(queue string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	qs := d.queues[queue]
+	if qs == nil {
+		return 0
+	}
+	return len(qs.dlq)
+}
+
+/*
 This allows the client to make a new driver
 for the in-memory datastore.
 */

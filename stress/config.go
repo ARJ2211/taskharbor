@@ -54,7 +54,7 @@ func parseConfigOrExit() Config {
 
 	var cfg Config
 
-	flag.StringVar(&cfg.DriverType, "driver", "", "required: postgres | redis")
+	flag.StringVar(&cfg.DriverType, "driver", "", "required: postgres | redis | memory")
 
 	flag.IntVar(&cfg.TotalJobs, "jobs", 120000, "total jobs to enqueue")
 	flag.IntVar(&cfg.NumQueues, "queues", 16, "number of queues (q0..qN)")
@@ -121,8 +121,10 @@ func parseConfigOrExit() Config {
 		if strings.TrimSpace(cfg.RedisPrefix) == "" {
 			log.Fatal("invalid -prefix (empty)")
 		}
+	case "memory":
+		break
 	default:
-		log.Fatalf("invalid -driver=%s (must be postgres|redis)", cfg.DriverType)
+		log.Fatalf("invalid -driver=%s (must be postgres|redis|memory)", cfg.DriverType)
 	}
 
 	return cfg
