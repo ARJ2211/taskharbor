@@ -106,7 +106,7 @@ func parseConfigOrExit() Config {
 
 	switch cfg.DriverType {
 	case "postgres":
-		cfg.PostgresDSN = os.Getenv("TASKHARBOR_DSN")
+		cfg.PostgresDSN = os.Getenv("TASKHARBOR_TEST_DSN")
 		if cfg.PostgresDSN == "" {
 			log.Fatal("TASKHARBOR_DSN not set (required for -driver postgres)")
 		}

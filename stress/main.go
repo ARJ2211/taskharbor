@@ -61,6 +61,7 @@ func main() {
 					taskharbor.WithConcurrency(cfg.Concurrency),
 					taskharbor.WithPollInterval(cfg.PollInterval),
 					taskharbor.WithHeartbeatInterval(cfg.HeartbeatInterval),
+					taskharbor.WithLeaseDuration(cfg.HeartbeatInterval*3),
 					taskharbor.WithRetryPolicy(rp),
 				)
 			} else {
@@ -70,6 +71,7 @@ func main() {
 					taskharbor.WithConcurrency(cfg.Concurrency),
 					taskharbor.WithPollInterval(cfg.PollInterval),
 					taskharbor.WithHeartbeatInterval(cfg.HeartbeatInterval),
+					taskharbor.WithLeaseDuration(cfg.HeartbeatInterval*3),
 				)
 			}
 
