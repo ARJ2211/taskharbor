@@ -30,8 +30,7 @@ Commands:
 Examples:
   taskharbor --help
   taskharbor worker run --help
-  taskharbor enqueue --help
-`)
+  taskharbor enqueue --help`)
 }
 
 func printWorkerUsage(w io.Writer) {
@@ -42,8 +41,7 @@ Subcommands:
   run
 
 Example:
-  taskharbor worker run --help
-`)
+  taskharbor worker run --help`)
 }
 
 func printWorkerRunUsage(w io.Writer) {
@@ -51,8 +49,7 @@ func printWorkerRunUsage(w io.Writer) {
   taskharbor [global flags] worker run [flags]
 
 Notes:
-  This will be implemented in issue #113.
-`)
+  This will be implemented in issue #113.`)
 }
 
 func printEnqueueUsage(w io.Writer) {
@@ -60,8 +57,7 @@ func printEnqueueUsage(w io.Writer) {
   taskharbor [global flags] enqueue [flags]
 
 Notes:
-  This will be implemented in issue #114.
-`)
+  This will be implemented in issue #114.`)
 }
 
 func printListUsage(w io.Writer) {
@@ -69,8 +65,7 @@ func printListUsage(w io.Writer) {
   taskharbor [global flags] list [flags]
 
 Notes:
-  This will be implemented in issue #119.
-`)
+  This will be implemented in issue #119.`)
 }
 
 func printInspectUsage(w io.Writer) {
@@ -78,8 +73,7 @@ func printInspectUsage(w io.Writer) {
   taskharbor [global flags] inspect <job_id> [flags]
 
 Notes:
-  This will be implemented in issue #119.
-`)
+  This will be implemented in issue #119.`)
 }
 
 func printDLQUsage(w io.Writer) {
@@ -92,8 +86,7 @@ Subcommands:
 
 Examples:
   taskharbor dlq list --help
-  taskharbor dlq requeue <job_id>
-`)
+  taskharbor dlq requeue <job_id>`)
 }
 
 func printDLQListUsage(w io.Writer) {
@@ -101,8 +94,7 @@ func printDLQListUsage(w io.Writer) {
   taskharbor [global flags] dlq list [flags]
 
 Notes:
-  This will be implemented in issue #119.
-`)
+  This will be implemented in issue #119.`)
 }
 
 func printDLQRequeueUsage(w io.Writer) {
@@ -110,8 +102,7 @@ func printDLQRequeueUsage(w io.Writer) {
   taskharbor [global flags] dlq requeue <job_id> [flags]
 
 Notes:
-  This will be implemented in issue #119.
-`)
+  This will be implemented in issue #119.`)
 }
 
 func printJobUsage(w io.Writer) {
@@ -122,8 +113,7 @@ Subcommands:
   retry <job_id>
 
 Example:
-  taskharbor job retry <job_id>
-`)
+  taskharbor job retry <job_id>`)
 }
 
 func printJobRetryUsage(w io.Writer) {
@@ -131,6 +121,5 @@ func printJobRetryUsage(w io.Writer) {
   taskharbor [global flags] job retry <job_id> [flags]
 
 Notes:
-  This will be implemented in issue #119.
-`)
+  This will be implemented in issue #119.`)
 }
