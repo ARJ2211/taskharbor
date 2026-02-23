@@ -17,6 +17,8 @@ Global flags:
   --json     JSON output
   --verbose  verbose logs
   --help, -h show help
+  --dsn         postgres DSN (for --driver postgres)
+  --redis-addr  redis addr host:port (for --driver redis)
 
 Commands:
   worker run

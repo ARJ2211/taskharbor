@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	th "github.com/ARJ2211/taskharbor/taskharbor"
@@ -15,6 +16,16 @@ type GlobalFlags struct {
 	Queue   string
 	JSON    bool
 	Verbose bool
+
+	PostgresDSN string
+	RedisAddr   string
+}
+
+func envOr(key, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func Run(argv []string, stdout, stderr io.Writer) int {
@@ -37,6 +48,9 @@ func Run(argv []string, stdout, stderr io.Writer) int {
 	fs.BoolVar(&g.Verbose, "verbose", false, "verbose logs")
 	fs.BoolVar(&help, "help", false, "show help")
 	fs.BoolVar(&h, "h", false, "show help")
+
+	fs.StringVar(&g.PostgresDSN, "dsn", envOr("TH_PG_DSN", envOr("TH_POSTGRES_DSN", "")), "postgres DSN (for --driver postgres)")
+	fs.StringVar(&g.RedisAddr, "redis-addr", envOr("TH_REDIS_ADDR", ""), "redis addr host:port (for --driver redis)")
 
 	if err := fs.Parse(argv); err != nil {
 		fmt.Println(stderr, "error: ", err)
