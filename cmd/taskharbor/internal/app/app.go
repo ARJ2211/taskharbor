@@ -124,60 +124,6 @@ func runWorker(g GlobalFlags, argv []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func runWorkerRun(_ GlobalFlags, argv []string, stdout, stderr io.Writer) int {
-	var help bool
-	var h bool
-
-	fs := flag.NewFlagSet("taskharbor worker run", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	fs.BoolVar(&help, "help", false, "show help")
-	fs.BoolVar(&h, "h", false, "show help")
-
-	if err := fs.Parse(argv); err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		printWorkerRunUsage(stderr)
-		return 2
-	}
-
-	if help || h {
-		printWorkerRunUsage(stdout)
-		return 0
-	}
-
-	if len(fs.Args()) != 0 {
-		fmt.Fprintln(stderr, "error: unexpected args:", strings.Join(fs.Args(), " "))
-		printWorkerRunUsage(stderr)
-		return 2
-	}
-
-	fmt.Fprintln(stderr, "not implemented yet (issue #113)")
-	return 1
-}
-
-func runEnqueue(_ GlobalFlags, argv []string, stdout, stderr io.Writer) int {
-	var help bool
-	var h bool
-
-	fs := flag.NewFlagSet("taskharbor enqueue", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	fs.BoolVar(&help, "help", false, "show help")
-	fs.BoolVar(&h, "h", false, "show help")
-
-	if err := fs.Parse(argv); err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		printEnqueueUsage(stderr)
-		return 2
-	}
-
-	if help || h {
-		printEnqueueUsage(stdout)
-		return 0
-	}
-
-	fmt.Fprintln(stderr, "not implemented yet (issue #114)")
-	return 1
-}
-
 func runList(_ GlobalFlags, argv []string, stdout, stderr io.Writer) int {
 	var help bool
 	var h bool
