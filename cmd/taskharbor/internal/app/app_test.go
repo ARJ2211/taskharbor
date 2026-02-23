@@ -35,3 +35,14 @@ func TestUnknownCommand(t *testing.T) {
 		t.Fatalf("expected non-zero, got %d", code)
 	}
 }
+
+func TestEnqueueMinimal(t *testing.T) {
+	var out, err bytes.Buffer
+	code := Run([]string{"enqueue", "--type", "echo", "--payload", "hi"}, &out, &err)
+	if code != 0 {
+		t.Fatalf("expected 0, got %d (stderr=%q)", code, err.String())
+	}
+	if strings.TrimSpace(out.String()) == "" {
+		t.Fatalf("expected a job id, got empty output")
+	}
+}
