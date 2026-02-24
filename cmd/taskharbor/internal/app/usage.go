@@ -88,16 +88,24 @@ func printListUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
   taskharbor [global flags] list [flags]
 
-Notes:
-  This will be implemented in issue #119.`)
+Flags:
+  --queue     queue name (defaults to global --queue)
+  --status    ready|scheduled|inflight|dlq|done|all
+  --limit     page size (default: 20)
+  --cursor    pagination cursor
+
+Examples:
+  taskharbor list
+  taskharbor list --status inflight
+  taskharbor list --status scheduled --limit 50`)
 }
 
 func printInspectUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
   taskharbor [global flags] inspect <job_id> [flags]
 
-Notes:
-  This will be implemented in issue #119.`)
+Examples:
+  taskharbor inspect 01J0ABCDEF1234567890`)
 }
 
 func printDLQUsage(w io.Writer) {
@@ -117,16 +125,28 @@ func printDLQListUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
   taskharbor [global flags] dlq list [flags]
 
-Notes:
-  This will be implemented in issue #119.`)
+Flags:
+  --queue     queue name (defaults to global --queue)
+  --limit     page size (default: 20)
+  --cursor    pagination cursor
+
+Examples:
+  taskharbor dlq list
+  taskharbor dlq list --limit 50`)
 }
 
 func printDLQRequeueUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
   taskharbor [global flags] dlq requeue <job_id> [flags]
 
-Notes:
-  This will be implemented in issue #119.`)
+Flags:
+  --queue           queue guard (defaults to global --queue)
+  --run-at          RFC3339/RFC3339Nano or unix seconds (or unix ms)
+  --reset-attempts  reset attempts/last_error/failed_at
+
+Examples:
+  taskharbor dlq requeue <job_id>
+  taskharbor dlq requeue <job_id> --reset-attempts`)
 }
 
 func printJobUsage(w io.Writer) {
@@ -145,5 +165,14 @@ func printJobRetryUsage(w io.Writer) {
   taskharbor [global flags] job retry <job_id> [flags]
 
 Notes:
-  This will be implemented in issue #119.`)
+  Alias of: taskharbor dlq requeue <job_id>
+
+Flags:
+  --queue           queue guard (defaults to global --queue)
+  --run-at          RFC3339/RFC3339Nano or unix seconds (or unix ms)
+  --reset-attempts  reset attempts/last_error/failed_at
+
+Examples:
+  taskharbor job retry <job_id>
+  taskharbor job retry <job_id> --reset-attempts`)
 }

@@ -124,61 +124,6 @@ func runWorker(g GlobalFlags, argv []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func runList(_ GlobalFlags, argv []string, stdout, stderr io.Writer) int {
-	var help bool
-	var h bool
-
-	fs := flag.NewFlagSet("taskharbor list", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	fs.BoolVar(&help, "help", false, "show help")
-	fs.BoolVar(&h, "h", false, "show help")
-
-	if err := fs.Parse(argv); err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		printListUsage(stderr)
-		return 2
-	}
-
-	if help || h {
-		printListUsage(stdout)
-		return 0
-	}
-
-	fmt.Fprintln(stderr, "not implemented yet (issue #119)")
-	return 1
-}
-
-func runInspect(_ GlobalFlags, argv []string, stdout, stderr io.Writer) int {
-	var help bool
-	var h bool
-
-	fs := flag.NewFlagSet("taskharbor inspect", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	fs.BoolVar(&help, "help", false, "show help")
-	fs.BoolVar(&h, "h", false, "show help")
-
-	if err := fs.Parse(argv); err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		printInspectUsage(stderr)
-		return 2
-	}
-
-	if help || h {
-		printInspectUsage(stdout)
-		return 0
-	}
-
-	args := fs.Args()
-	if len(args) != 1 {
-		fmt.Fprintln(stderr, "error: inspect requires exactly 1 arg: <job_id>")
-		printInspectUsage(stderr)
-		return 2
-	}
-
-	fmt.Fprintln(stderr, "not implemented yet (issue #119)")
-	return 1
-}
-
 func runDLQ(g GlobalFlags, argv []string, stdout, stderr io.Writer) int {
 	var help bool
 	var h bool
@@ -215,61 +160,6 @@ func runDLQ(g GlobalFlags, argv []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func runDLQList(_ GlobalFlags, argv []string, stdout, stderr io.Writer) int {
-	var help bool
-	var h bool
-
-	fs := flag.NewFlagSet("taskharbor dlq list", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	fs.BoolVar(&help, "help", false, "show help")
-	fs.BoolVar(&h, "h", false, "show help")
-
-	if err := fs.Parse(argv); err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		printDLQListUsage(stderr)
-		return 2
-	}
-
-	if help || h {
-		printDLQListUsage(stdout)
-		return 0
-	}
-
-	fmt.Fprintln(stderr, "not implemented yet (issue #119)")
-	return 1
-}
-
-func runDLQRequeue(_ GlobalFlags, argv []string, stdout, stderr io.Writer) int {
-	var help bool
-	var h bool
-
-	fs := flag.NewFlagSet("taskharbor dlq requeue", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	fs.BoolVar(&help, "help", false, "show help")
-	fs.BoolVar(&h, "h", false, "show help")
-
-	if err := fs.Parse(argv); err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		printDLQRequeueUsage(stderr)
-		return 2
-	}
-
-	if help || h {
-		printDLQRequeueUsage(stdout)
-		return 0
-	}
-
-	args := fs.Args()
-	if len(args) != 1 {
-		fmt.Fprintln(stderr, "error: dlq requeue requires exactly 1 arg: <job_id>")
-		printDLQRequeueUsage(stderr)
-		return 2
-	}
-
-	fmt.Fprintln(stderr, "not implemented yet (issue #119)")
-	return 1
-}
-
 func runJob(g GlobalFlags, argv []string, stdout, stderr io.Writer) int {
 	var help bool
 	var h bool
@@ -302,35 +192,4 @@ func runJob(g GlobalFlags, argv []string, stdout, stderr io.Writer) int {
 		printJobUsage(stderr)
 		return 2
 	}
-}
-
-func runJobRetry(_ GlobalFlags, argv []string, stdout, stderr io.Writer) int {
-	var help bool
-	var h bool
-
-	fs := flag.NewFlagSet("taskharbor job retry", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	fs.BoolVar(&help, "help", false, "show help")
-	fs.BoolVar(&h, "h", false, "show help")
-
-	if err := fs.Parse(argv); err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		printJobRetryUsage(stderr)
-		return 2
-	}
-
-	if help || h {
-		printJobRetryUsage(stdout)
-		return 0
-	}
-
-	args := fs.Args()
-	if len(args) != 1 {
-		fmt.Fprintln(stderr, "error: job retry requires exactly 1 arg: <job_id>")
-		printJobRetryUsage(stderr)
-		return 2
-	}
-
-	fmt.Fprintln(stderr, "not implemented yet (issue #119)")
-	return 1
 }
