@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/ARJ2211/taskharbor/taskharbor/driver"
 	"github.com/ARJ2211/taskharbor/taskharbor/driver/memory"
@@ -19,29 +20,44 @@ type Config struct {
 }
 
 type Handle struct {
-	Driver driver.Driver
+	Driver  driver.Driver
+	closeFn func() error
 }
 
 func (h *Handle) Close() error {
-	if h == nil || h.Driver == nil {
+	if h == nil {
 		return nil
 	}
-	if err := h.Driver.Close(); err != nil {
-		return err
+	if h.closeFn != nil {
+		return h.closeFn()
 	}
-	return nil
+	if h.Driver == nil {
+		return nil
+	}
+	return h.Driver.Close()
 }
 
-/*
-This function opens a new driver based on the configs and
-arguments provided by the user. Default driver: memory.
-*/
+var (
+	memMu     sync.Mutex
+	sharedMem *memory.Driver
+)
+
 func Open(ctx context.Context, cfg Config) (*Handle, error) {
-	ds := strings.ToLower(strings.TrimSpace(cfg.Driver))
-	switch ds {
+	switch strings.ToLower(strings.TrimSpace(cfg.Driver)) {
 	case "", "memory":
-		memDrvHnd := Handle{Driver: memory.New()}
-		return &memDrvHnd, nil
+		memMu.Lock()
+		if sharedMem == nil {
+			sharedMem = memory.New()
+		}
+		d := sharedMem
+		memMu.Unlock()
+
+		// memory is in-process only; do not close it between commands
+		return &Handle{
+			Driver:  d,
+			closeFn: func() error { return nil },
+		}, nil
+
 	case "postgres":
 		if strings.TrimSpace(cfg.PostgresDSN) == "" {
 			return nil, fmt.Errorf("postgres requires --dsn (or TH_PG_DSN)")
@@ -50,8 +66,8 @@ func Open(ctx context.Context, cfg Config) (*Handle, error) {
 		if err != nil {
 			return nil, err
 		}
-		psqlDrvHnd := Handle{Driver: d}
-		return &psqlDrvHnd, nil
+		return &Handle{Driver: d}, nil
+
 	case "redis":
 		if strings.TrimSpace(cfg.RedisAddr) == "" {
 			return nil, fmt.Errorf("redis requires --redis-addr (or TH_REDIS_ADDR)")
@@ -60,12 +76,9 @@ func Open(ctx context.Context, cfg Config) (*Handle, error) {
 		if err != nil {
 			return nil, err
 		}
-		redisDrvHnd := Handle{Driver: d}
-		return &redisDrvHnd, nil
+		return &Handle{Driver: d}, nil
+
 	default:
-		return nil, fmt.Errorf(
-			"unknown driver: %s (expected memory|postgres|redis)",
-			cfg.Driver,
-		)
+		return nil, fmt.Errorf("unknown driver: %s (expected memory|postgres|redis)", cfg.Driver)
 	}
 }
