@@ -29,8 +29,9 @@ type Driver struct {
 	inflightIndex map[string]string
 	idemIndex     map[string]string
 
-	doneIndex map[string]struct{}
-	dlqIndex  map[string]string
+	doneIndex   map[string]struct{}
+	dlqIndex    map[string]string
+	doneRecords map[string]driver.JobRecord
 
 	closed bool
 }
@@ -78,6 +79,11 @@ func (d *Driver) Reset() error {
 	d.queues = make(map[string]*queueState)
 	d.inflightIndex = make(map[string]string)
 	d.idemIndex = make(map[string]string)
+
+	d.doneIndex = make(map[string]struct{})
+	d.doneRecords = make(map[string]driver.JobRecord)
+	d.dlqIndex = make(map[string]string)
+
 	d.closed = false
 	return nil
 }
@@ -123,6 +129,7 @@ func New() *Driver {
 		idemIndex:     make(map[string]string),
 		doneIndex:     make(map[string]struct{}),
 		dlqIndex:      make(map[string]string),
+		doneRecords:   make(map[string]driver.JobRecord),
 	}
 	return &driver
 }
@@ -414,6 +421,9 @@ func (d *Driver) Ack(
 
 	delete(qs.inflight, id)
 	delete(d.inflightIndex, id)
+
+	d.doneIndex[id] = struct{}{}
+	d.doneRecords[id] = it.rec
 
 	d.doneIndex[id] = struct{}{}
 

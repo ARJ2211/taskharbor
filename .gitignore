@@ -37,4 +37,7 @@ go.work.sum
 # Stale branches / forks
 stale
 
+# Taskharbor binaries
+th     
+
 # .gitignore

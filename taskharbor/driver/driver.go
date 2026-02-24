@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// List of all implemented drivers
+var ImplementedDrivers = []string{"memory", "redis", "postgres"}
+
 /*
 This JobRecord is the driver-level representation of a Job.
 This is the struct that will be saved in some backend (Redis/SQL/etc...)

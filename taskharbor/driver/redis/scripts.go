@@ -386,6 +386,7 @@ if tonumber(db_exp) <= now then
 end
 local queue = redis.call('HGET', job_key, 'queue')
 redis.call('HSET', job_key, 'status', 'done', 'lease_token', '', 'lease_expires_at_nano', '0')
+redis.call('RPUSH', prefix .. ":queue:" .. queue .. ":done", id)
 local inflight_key = prefix .. ":queue:" .. queue .. ":inflight"
 redis.call('ZREM', inflight_key, id)
 return 1
@@ -546,6 +547,111 @@ func (d *Driver) runFailScript(ctx context.Context, id, token string, nowNano in
 	}
 	n, _ := toInt64(v)
 	return n == 1, nil
+}
+
+const scriptRequeueDLQ = `
+local prefix = KEYS[1]
+local id = ARGV[1]
+local now_nano = tonumber(ARGV[2])
+
+local queue_guard = ARGV[3]      -- '' means ignore
+local run_at_nano = ARGV[4]      -- string
+local run_at_sec = tonumber(ARGV[5])
+local run_at_member = ARGV[6]
+local reset = tonumber(ARGV[7]) -- 0/1
+
+local job_key = prefix .. ":job:" .. id
+if redis.call('EXISTS', job_key) == 0 then
+  return 0
+end
+
+local status = redis.call('HGET', job_key, 'status')
+if status ~= 'dlq' then
+  return -1
+end
+
+local queue = redis.call('HGET', job_key, 'queue')
+if queue_guard ~= nil and queue_guard ~= '' and queue_guard ~= queue then
+  return -2
+end
+
+local dlq_key = prefix .. ":queue:" .. queue .. ":dlq"
+redis.call('LREM', dlq_key, 0, id)
+
+local new_status = 'ready'
+if run_at_nano ~= nil and run_at_nano ~= '' and run_at_nano ~= '0' then
+  if tonumber(run_at_nano) > now_nano then
+    new_status = 'scheduled'
+  else
+    run_at_nano = '0'
+  end
+else
+  run_at_nano = '0'
+end
+
+if reset == 1 then
+  redis.call('HSET', job_key,
+    'status', new_status,
+    'run_at_nano', run_at_nano,
+    'attempts', '0',
+    'last_error', '',
+    'failed_at_nano', '0',
+    'dlq_reason', '',
+    'dlq_failed_at_nano', '0',
+    'lease_token', '',
+    'lease_expires_at_nano', '0'
+  )
+else
+  redis.call('HSET', job_key,
+    'status', new_status,
+    'run_at_nano', run_at_nano,
+    'dlq_reason', '',
+    'dlq_failed_at_nano', '0',
+    'lease_token', '',
+    'lease_expires_at_nano', '0'
+  )
+end
+
+if new_status == 'ready' then
+  redis.call('RPUSH', prefix .. ":queue:" .. queue .. ":ready", id)
+else
+  redis.call('ZADD', prefix .. ":queue:" .. queue .. ":scheduled", run_at_sec, run_at_member)
+end
+
+return 1
+`
+
+func (d *Driver) runRequeueDLQScript(
+	ctx context.Context,
+	id string,
+	nowNano int64,
+	queueGuard string,
+	runAtNano int64,
+	runAtSec int64,
+	runAtMember string,
+	resetAttempts bool,
+) (int64, error) {
+	keys := []string{d.opts.prefix}
+	reset := int64(0)
+	if resetAttempts {
+		reset = 1
+	}
+	args := []any{
+		id,
+		strconv.FormatInt(nowNano, 10),
+		queueGuard,
+		strconv.FormatInt(runAtNano, 10),
+		strconv.FormatInt(runAtSec, 10),
+		runAtMember,
+		strconv.FormatInt(reset, 10),
+	}
+
+	v, err := d.client.Eval(ctx, scriptRequeueDLQ, keys, args...).Result()
+	if err != nil {
+		return 0, err
+	}
+	n, _ := toInt64(v)
+	return n, nil
 }
 
 // Silence unused import warnings if you temporarily comment-out scripts during refactors.
