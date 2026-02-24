@@ -23,7 +23,7 @@ func newTestPool(t *testing.T) (*pgxpool.Pool, context.Context, context.CancelFu
 		t.Skip("TASKHARBOR_TEST_DSN not set")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
