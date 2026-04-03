@@ -174,7 +174,7 @@ Milestone 7: Conformance test suite (C)
 - Deliver: memory and Postgres drivers pass conformance
 - Done when: a new driver can be validated by running the suite.
 
-Milestone 8: CLI v0
+Milestone 8: CLI v0 (C)
 
 - Deliver: worker run, enqueue, list, inspect
 - Deliver: dlq list, dlq requeue, job retry
